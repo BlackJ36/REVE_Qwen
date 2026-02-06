@@ -226,7 +226,7 @@ def run_e2e_training(
         gradient_checkpointing_kwargs={"use_reentrant": False} if not use_4bit else None,
     )
 
-    callbacks = [EarlyStoppingCallback(early_stopping_patience=early_stopping_patience)]
+    callbacks = []
     best_dir = Path(output_dir) / "best"
     best_dir.mkdir(parents=True, exist_ok=True)
     trainer = BCIE2ETrainer(
