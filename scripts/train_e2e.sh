@@ -12,13 +12,14 @@ export OMP_NUM_THREADS=8
 export TOKENIZERS_PARALLELISM=true
 
 NUM_GPUS=${NUM_GPUS:-4}
-BATCH_SIZE=${BATCH_SIZE:-128}
-GRAD_ACCUM=${GRAD_ACCUM:-1}
+NUM_EEG_TOKENS=${NUM_EEG_TOKENS:-186}
+BATCH_SIZE=${BATCH_SIZE:-32}
+GRAD_ACCUM=${GRAD_ACCUM:-4}
 EPOCHS=${EPOCHS:-30}
 UNFREEZE=${UNFREEZE:-4}
 
 echo "=== BCI-Qwen E2E Training (${NUM_GPUS} GPUs) ==="
-echo "Batch size per GPU: ${BATCH_SIZE}, grad_accum: ${GRAD_ACCUM}"
+echo "EEG tokens: ${NUM_EEG_TOKENS}, batch/GPU: ${BATCH_SIZE}, grad_accum: ${GRAD_ACCUM}"
 echo "Effective batch size: $((NUM_GPUS * BATCH_SIZE * GRAD_ACCUM))"
 echo "REVE unfreeze last: ${UNFREEZE} layers"
 
@@ -30,6 +31,7 @@ uv run deepspeed \
     --model_name Qwen/Qwen3-VL-8B-Instruct \
     --from_modelscope \
     --unfreeze_last_n ${UNFREEZE} \
+    --num_eeg_tokens ${NUM_EEG_TOKENS} \
     --reve_lr 3e-5 \
     --lora_rank 64 \
     --lora_alpha 128 \

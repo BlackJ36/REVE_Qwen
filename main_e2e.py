@@ -20,6 +20,8 @@ def parse_args():
                         help="Local directory containing reve-base/ and reve-positions/")
     parser.add_argument("--unfreeze_last_n", type=int, default=4,
                         help="Number of REVE transformer layers to unfreeze (from the end)")
+    parser.add_argument("--num_eeg_tokens", type=int, default=186,
+                        help="EEG tokens per trial: 1=pooled (variant A), 186=all patches (variant B)")
     parser.add_argument("--reve_lr", type=float, default=3e-5,
                         help="Learning rate for REVE unfrozen layers")
 
@@ -66,6 +68,7 @@ def main():
         from_modelscope=args.from_modelscope,
         reve_dir=args.reve_dir,
         unfreeze_last_n=args.unfreeze_last_n,
+        num_eeg_tokens=args.num_eeg_tokens,
         reve_lr=args.reve_lr,
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,

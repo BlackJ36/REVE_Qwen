@@ -160,6 +160,7 @@ def run_e2e_training(
     # REVE
     reve_dir="models",
     unfreeze_last_n=4,
+    num_eeg_tokens=186,
     reve_lr=3e-5,
     # LoRA
     lora_rank=64,
@@ -188,6 +189,7 @@ def run_e2e_training(
         from_modelscope=from_modelscope,
         reve_dir=reve_dir,
         unfreeze_last_n=unfreeze_last_n,
+        num_eeg_tokens=num_eeg_tokens,
         lora_rank=lora_rank,
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
@@ -195,8 +197,8 @@ def run_e2e_training(
     )
 
     print("Loading E2E datasets...")
-    train_dataset = BCIE2EDataset(eeg_dir, tokenizer, split="train")
-    val_dataset = BCIE2EDataset(eeg_dir, tokenizer, split="val")
+    train_dataset = BCIE2EDataset(eeg_dir, tokenizer, split="train", num_eeg_tokens=num_eeg_tokens)
+    val_dataset = BCIE2EDataset(eeg_dir, tokenizer, split="val", num_eeg_tokens=num_eeg_tokens)
     collator = BCIE2EDataCollator(tokenizer)
 
     training_args = TrainingArguments(

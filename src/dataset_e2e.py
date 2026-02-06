@@ -13,9 +13,10 @@ SYSTEM_PROMPT = "你是一个脑机接口解码器。根据用户的EEG信号，
 class BCIE2EDataset(Dataset):
     """Loads raw preprocessed EEG tensors for end-to-end training."""
 
-    def __init__(self, eeg_dir, tokenizer, split="train"):
+    def __init__(self, eeg_dir, tokenizer, split="train", num_eeg_tokens=186):
         self.tokenizer = tokenizer
         self.eeg_dir = Path(eeg_dir)
+        self.num_eeg_tokens = num_eeg_tokens
 
         data = torch.load(self.eeg_dir / f"{split}_eeg.pt", weights_only=True)
         self.eeg_data = data["eeg_data"]  # (N, 62, 600)
@@ -29,9 +30,10 @@ class BCIE2EDataset(Dataset):
 
     def _build_template(self):
         """Pre-tokenize the fixed parts of the chat template."""
+        pad_tokens = BCI_PAD * self.num_eeg_tokens
         chat_prefix = (
             f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
-            f"<|im_start|>user\n{BCI_START}{BCI_PAD}{BCI_END}<|im_end|>\n"
+            f"<|im_start|>user\n{BCI_START}{pad_tokens}{BCI_END}<|im_end|>\n"
             f"<|im_start|>assistant\n"
         )
         self.prefix_ids = self.tokenizer.encode(chat_prefix, add_special_tokens=False)

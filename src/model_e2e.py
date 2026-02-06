@@ -64,13 +64,14 @@ class REVEWithUnfreeze(nn.Module):
             f"Top-level modules: {[n for n, _ in self.reve.named_children()]}"
         )
 
-    def forward(self, eeg_tensor, output_dtype=None):
+    def forward(self, eeg_tensor, output_dtype=None, pool=True):
         """
         Args:
             eeg_tensor: (B, 62, 600) raw preprocessed EEG
             output_dtype: cast output to this dtype (e.g. bf16 for DeepSpeed training)
+            pool: if True return (B, 512) pooled; if False return (B, N, 512) all tokens
         Returns:
-            (B, 512) pooled embedding
+            (B, 512) if pool=True, (B, N, 512) if pool=False (N=62*patches=186)
         """
         B = eeg_tensor.shape[0]
         reve = self.reve
@@ -99,10 +100,14 @@ class REVEWithUnfreeze(nn.Module):
         x = rearrange(x, "b (c h) e -> b c h e", b=_b, c=c, h=h, e=reve.embed_dim)
         x = reve.final_layer(x)
 
-        pooled = reve.attention_pooling(x)  # (B, 512)
+        if pool:
+            out = reve.attention_pooling(x)  # (B, 512)
+        else:
+            out = rearrange(x, "b c h e -> b (c h) e")  # (B, 186, 512)
+
         if output_dtype is not None:
-            pooled = pooled.to(dtype=output_dtype)
-        return pooled
+            out = out.to(dtype=output_dtype)
+        return out
 
     @property
     def embed_dim(self):
@@ -112,13 +117,14 @@ class REVEWithUnfreeze(nn.Module):
 class BCIE2EQwenForCausalLM(nn.Module):
     """End-to-end model: raw EEG → REVE → projector → Qwen."""
 
-    def __init__(self, reve_wrapper, qwen_model, tokenizer, projector):
+    def __init__(self, reve_wrapper, qwen_model, tokenizer, projector, num_eeg_tokens=1):
         super().__init__()
         self.reve = reve_wrapper
         self.qwen = qwen_model
         self.tokenizer = tokenizer
         self.projector = projector
         self.bci_pad_id = tokenizer.convert_tokens_to_ids(BCI_PAD)
+        self.num_eeg_tokens = num_eeg_tokens
 
     def get_input_embeddings(self):
         return self.qwen.get_input_embeddings()
@@ -136,17 +142,21 @@ class BCIE2EQwenForCausalLM(nn.Module):
 
         if eeg_tensor is not None:
             eeg_tensor = eeg_tensor.to(device=inputs_embeds.device)
-            # REVE runs in float32 internally, output cast to training dtype
-            reve_emb = self.reve(eeg_tensor, output_dtype=inputs_embeds.dtype)
-            # Project: (B, 512) → (B, qwen_dim)
+            pool = self.num_eeg_tokens == 1
+            reve_emb = self.reve(eeg_tensor, output_dtype=inputs_embeds.dtype, pool=pool)
+            # Project: (B, [N,] 512) → (B, [N,] qwen_dim)
             projected = self.projector(reve_emb)
 
             inputs_embeds = inputs_embeds.clone()
             bci_pad_mask = input_ids == self.bci_pad_id
             for i in range(input_ids.size(0)):
                 pad_positions = bci_pad_mask[i].nonzero(as_tuple=True)[0]
-                if len(pad_positions) > 0:
-                    inputs_embeds[i, pad_positions[0]] = projected[i]
+                if pool:
+                    if len(pad_positions) > 0:
+                        inputs_embeds[i, pad_positions[0]] = projected[i]
+                else:
+                    n = min(len(pad_positions), projected.size(1))
+                    inputs_embeds[i, pad_positions[:n]] = projected[i, :n]
 
         return self.qwen(
             inputs_embeds=inputs_embeds,
@@ -177,6 +187,7 @@ def build_e2e_model(
     reve_dir="models",
     reve_dim=512,
     unfreeze_last_n=4,
+    num_eeg_tokens=186,
     lora_rank=64,
     lora_alpha=128,
     lora_dropout=0.05,
@@ -263,7 +274,8 @@ def build_e2e_model(
     projector = EEGProjector(reve_dim=reve_dim, qwen_dim=qwen_dim)
 
     # --- Assemble ---
-    model = BCIE2EQwenForCausalLM(reve_wrapper, qwen_model, tokenizer, projector)
+    model = BCIE2EQwenForCausalLM(reve_wrapper, qwen_model, tokenizer, projector, num_eeg_tokens=num_eeg_tokens)
+    print(f"EEG tokens per trial: {num_eeg_tokens} ({'pooled' if num_eeg_tokens == 1 else 'all patches'})")
 
     if not use_4bit:
         model.gradient_checkpointing_enable()
