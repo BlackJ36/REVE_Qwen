@@ -61,6 +61,9 @@ class BCIQwenForCausalLM(nn.Module):
             self.projector = self.projector.to(inputs_embeds.device)
             projected = self.projector(eeg_embeddings)  # (B, qwen_dim)
 
+            # Clone to avoid in-place modification issues with gradient flow
+            inputs_embeds = inputs_embeds.clone()
+
             # Replace <|bci_pad|> placeholder embeddings with projected EEG
             bci_pad_mask = input_ids == self.bci_pad_id  # (B, L)
             for i in range(input_ids.size(0)):
