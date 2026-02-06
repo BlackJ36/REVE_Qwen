@@ -5,6 +5,7 @@ set -e
 # Fix httpx socks proxy incompatibility
 export ALL_PROXY="" all_proxy=""
 export MODELSCOPE_OFFLINE=1
+export HF_HUB_OFFLINE=1
 
 # Performance optimizations
 export OMP_NUM_THREADS=8

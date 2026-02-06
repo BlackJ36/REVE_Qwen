@@ -37,10 +37,14 @@ def load_e2e_model_for_inference(
     """
     checkpoint_dir = Path(checkpoint_dir)
 
-    # Load REVE
+    # Load REVE (local_files_only to avoid 401 on gated repos)
     print("Loading REVE...")
-    pos_bank = AutoModel.from_pretrained("brain-bzh/reve-positions", trust_remote_code=True)
-    reve_model = AutoModel.from_pretrained("brain-bzh/reve-base", trust_remote_code=True)
+    pos_bank = AutoModel.from_pretrained(
+        "brain-bzh/reve-positions", trust_remote_code=True, local_files_only=True,
+    )
+    reve_model = AutoModel.from_pretrained(
+        "brain-bzh/reve-base", trust_remote_code=True, local_files_only=True,
+    )
     reve_wrapper = REVEWithUnfreeze(
         reve_model, pos_bank, channel_names=VALID_CHANNEL_NAMES, unfreeze_last_n=unfreeze_last_n,
     )

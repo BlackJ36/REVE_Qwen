@@ -158,10 +158,15 @@ def build_e2e_model(
     Returns (model, tokenizer).
     """
     # --- Load REVE ---
+    # local_files_only=True: avoid 401 on gated repos when using cached weights
     print("Loading REVE position bank...")
-    pos_bank = AutoModel.from_pretrained("brain-bzh/reve-positions", trust_remote_code=True)
+    pos_bank = AutoModel.from_pretrained(
+        "brain-bzh/reve-positions", trust_remote_code=True, local_files_only=True,
+    )
     print("Loading REVE-base model...")
-    reve_model = AutoModel.from_pretrained("brain-bzh/reve-base", trust_remote_code=True)
+    reve_model = AutoModel.from_pretrained(
+        "brain-bzh/reve-base", trust_remote_code=True, local_files_only=True,
+    )
 
     reve_wrapper = REVEWithUnfreeze(
         reve_model, pos_bank, channel_names=VALID_CHANNEL_NAMES, unfreeze_last_n=unfreeze_last_n,
