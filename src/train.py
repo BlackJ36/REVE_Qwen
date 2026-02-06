@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import torch
-from transformers import Trainer, TrainingArguments
+from transformers import EarlyStoppingCallback, Trainer, TrainingArguments
 
 from .dataset import BCIDataCollator, BCIEEGDataset
 from .model import build_model
@@ -97,7 +97,8 @@ def run_training(
     per_device_batch_size=8,
     gradient_accumulation_steps=2,
     learning_rate=2e-4,
-    num_epochs=10,
+    num_epochs=30,
+    early_stopping_patience=5,
     warmup_ratio=0.05,
     # DeepSpeed
     deepspeed_config="configs/ds_zero2.json",
@@ -176,12 +177,14 @@ def run_training(
     )
 
     # Create trainer with separate LR for projector
+    callbacks = [EarlyStoppingCallback(early_stopping_patience=early_stopping_patience)]
     trainer = BCITrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         data_collator=collator,
+        callbacks=callbacks,
         projector_lr=1e-3,  # Higher LR for projector (training from scratch)
     )
 
