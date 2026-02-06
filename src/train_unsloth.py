@@ -85,11 +85,14 @@ def run_training_unsloth(
         lr_scheduler_type="cosine",
         bf16=True,
         logging_steps=10,
-        eval_strategy="epoch",
+        eval_strategy="steps",
+        eval_steps=500,
         save_strategy="no",  # Save manually to avoid tied weights error
-        dataloader_num_workers=2,
+        dataloader_num_workers=4,
+        dataloader_pin_memory=True,
         remove_unused_columns=False,
-        report_to="none",
+        report_to="tensorboard",
+        logging_dir=f"{output_dir}/logs",
         optim="adamw_8bit",  # Unsloth recommended
     )
 

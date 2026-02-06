@@ -116,19 +116,22 @@ def run_training(
         lr_scheduler_type="cosine",
         bf16=True,
         logging_steps=10,
-        eval_strategy="epoch",
-        save_strategy="epoch",
-        save_total_limit=3,
+        eval_strategy="steps",
+        eval_steps=1000,
+        save_strategy="steps",
+        save_steps=1000,
+        save_total_limit=5,
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
+        report_to="tensorboard",  # 启用 TensorBoard
+        logging_dir=f"{output_dir}/logs",  # TensorBoard 日志目录
         dataloader_num_workers=8,  # 增加数据加载并行度
         dataloader_pin_memory=True,  # 加速 CPU->GPU 传输
         dataloader_prefetch_factor=4,  # 预加载更多 batch
         dataloader_persistent_workers=True,  # 保持 worker 进程存活
         deepspeed=deepspeed_config,
         remove_unused_columns=False,
-        report_to="none",
         gradient_checkpointing=not use_4bit,  # Already handled in prepare_model_for_kbit_training
         gradient_checkpointing_kwargs={"use_reentrant": False} if not use_4bit else None,
     )
