@@ -122,8 +122,7 @@ def run_training_unsloth(
         lr_scheduler_type="cosine",
         bf16=True,
         logging_steps=10,
-        eval_strategy="steps",
-        eval_steps=500,
+        eval_strategy="epoch",
         save_strategy="no",  # Save manually to avoid tied weights error
         dataloader_num_workers=4,
         dataloader_pin_memory=True,
