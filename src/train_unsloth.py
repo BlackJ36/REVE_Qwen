@@ -13,6 +13,43 @@ from .model_unsloth import build_model_unsloth
 class BCITrainer(Trainer):
     """Custom Trainer that passes eeg_embeddings to model forward."""
 
+    def __init__(self, projector_lr=1e-3, **kwargs):
+        super().__init__(**kwargs)
+        self.projector_lr = projector_lr
+
+    def create_optimizer(self):
+        """Create optimizer with different LR for projector vs LoRA."""
+        if self.optimizer is not None:
+            return self.optimizer
+
+        # Separate projector params (higher LR) from LoRA params (lower LR)
+        projector_params = []
+        other_params = []
+
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad:
+                continue
+            if "projector" in name:
+                projector_params.append(param)
+            else:
+                other_params.append(param)
+
+        optimizer_grouped_parameters = [
+            {"params": projector_params, "lr": self.projector_lr},
+            {"params": other_params, "lr": self.args.learning_rate},
+        ]
+
+        from torch.optim import AdamW
+        self.optimizer = AdamW(
+            optimizer_grouped_parameters,
+            betas=(0.9, 0.999),
+            eps=1e-8,
+            weight_decay=self.args.weight_decay,
+        )
+
+        print(f"Optimizer: Projector lr={self.projector_lr}, LoRA lr={self.args.learning_rate}")
+        return self.optimizer
+
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         eeg_embeddings = inputs.pop("eeg_embeddings", None)
         outputs = model(
@@ -96,13 +133,14 @@ def run_training_unsloth(
         optim="adamw_8bit",  # Unsloth recommended
     )
 
-    # Create trainer
+    # Create trainer with separate LR for projector
     trainer = BCITrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         data_collator=collator,
+        projector_lr=1e-3,  # Higher LR for projector
     )
 
     # Train
