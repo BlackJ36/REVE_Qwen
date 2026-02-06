@@ -52,24 +52,30 @@ class BCIEEGDataset(Dataset):
             self.suffix_text, add_special_tokens=False
         )
 
+        # Pre-compute all 40 target sequences (avoid tokenizing in __getitem__)
+        self.target_sequences = {}
+        for target_idx, target_token in TARGET_INDEX_TO_TOKEN.items():
+            target_ids = self.tokenizer.encode(target_token, add_special_tokens=False)
+            input_ids = self.prefix_ids + target_ids + self.suffix_ids
+            labels = [-100] * len(self.prefix_ids) + target_ids + self.suffix_ids
+            self.target_sequences[target_idx] = {
+                "input_ids": torch.tensor(input_ids, dtype=torch.long),
+                "labels": torch.tensor(labels, dtype=torch.long),
+            }
+
     def __len__(self):
         return len(self.labels)
 
     def __getitem__(self, idx):
         eeg_emb = self.embeddings[idx]  # (reve_dim,)
         target_idx = int(self.labels[idx])
-        target_token = TARGET_INDEX_TO_TOKEN[target_idx]
 
-        # Build full input_ids: prefix + target_token + suffix
-        target_ids = self.tokenizer.encode(target_token, add_special_tokens=False)
-        input_ids = self.prefix_ids + target_ids + self.suffix_ids
-
-        # Labels: -100 for everything except the target token position
-        labels = [-100] * len(self.prefix_ids) + target_ids + self.suffix_ids
+        # Use pre-computed sequences (no tokenization overhead)
+        seq = self.target_sequences[target_idx]
 
         return {
-            "input_ids": torch.tensor(input_ids, dtype=torch.long),
-            "labels": torch.tensor(labels, dtype=torch.long),
+            "input_ids": seq["input_ids"],
+            "labels": seq["labels"],
             "eeg_embeddings": eeg_emb.float(),
         }
 

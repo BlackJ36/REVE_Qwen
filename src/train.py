@@ -122,7 +122,10 @@ def run_training(
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
-        dataloader_num_workers=4,
+        dataloader_num_workers=8,  # 增加数据加载并行度
+        dataloader_pin_memory=True,  # 加速 CPU->GPU 传输
+        dataloader_prefetch_factor=4,  # 预加载更多 batch
+        dataloader_persistent_workers=True,  # 保持 worker 进程存活
         deepspeed=deepspeed_config,
         remove_unused_columns=False,
         report_to="none",
