@@ -71,10 +71,10 @@ class REVEWithUnfreeze(nn.Module):
             (B, 512) pooled embedding
         """
         B = eeg_tensor.shape[0]
-        # Match REVE parameter dtype (bf16 under DeepSpeed/AMP)
-        dtype = next(self.reve.parameters()).dtype
+        # Cast inputs to match REVE's dtype (bf16)
+        dtype = self.electrode_positions.dtype
         eeg_tensor = eeg_tensor.to(dtype=dtype)
-        pos = self.electrode_positions.unsqueeze(0).expand(B, -1, -1).to(dtype=dtype)
+        pos = self.electrode_positions.unsqueeze(0).expand(B, -1, -1)
         output = self.reve(eeg_tensor, pos)  # (B, 62, patches, 512)
         pooled = self.reve.attention_pooling(output)  # (B, 512)
         return pooled
@@ -176,6 +176,7 @@ def build_e2e_model(
     reve_wrapper = REVEWithUnfreeze(
         reve_model, pos_bank, channel_names=VALID_CHANNEL_NAMES, unfreeze_last_n=unfreeze_last_n,
     )
+    reve_wrapper = reve_wrapper.to(torch.bfloat16)  # Match Qwen's dtype
 
     # --- Load Qwen ---
     if from_modelscope:
