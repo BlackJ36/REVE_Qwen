@@ -24,6 +24,7 @@ data/BETA/
 output/
 
 # Model cache
+models/
 *.safetensors
 *.bin
 unsloth_compiled_cache/

@@ -137,6 +137,7 @@ def run_e2e_training(
     model_name="Qwen/Qwen3-VL-8B-Instruct",
     from_modelscope=True,
     # REVE
+    reve_dir="models",
     unfreeze_last_n=4,
     reve_lr=3e-5,
     # LoRA
@@ -164,6 +165,7 @@ def run_e2e_training(
     model, tokenizer = build_e2e_model(
         model_name=model_name,
         from_modelscope=from_modelscope,
+        reve_dir=reve_dir,
         unfreeze_last_n=unfreeze_last_n,
         lora_rank=lora_rank,
         lora_alpha=lora_alpha,

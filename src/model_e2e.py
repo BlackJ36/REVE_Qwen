@@ -146,6 +146,7 @@ class BCIE2EQwenForCausalLM(nn.Module):
 def build_e2e_model(
     model_name="Qwen/Qwen3-VL-8B-Instruct",
     from_modelscope=True,
+    reve_dir="models",
     reve_dim=512,
     unfreeze_last_n=4,
     lora_rank=64,
@@ -157,15 +158,16 @@ def build_e2e_model(
 
     Returns (model, tokenizer).
     """
-    # --- Load REVE ---
-    # local_files_only=True: avoid 401 on gated repos when using cached weights
-    print("Loading REVE position bank...")
+    from pathlib import Path
+
+    # --- Load REVE from local directory ---
+    reve_dir = Path(reve_dir)
+    print(f"Loading REVE from {reve_dir}...")
     pos_bank = AutoModel.from_pretrained(
-        "brain-bzh/reve-positions", trust_remote_code=True, local_files_only=True,
+        str(reve_dir / "reve-positions"), trust_remote_code=True,
     )
-    print("Loading REVE-base model...")
     reve_model = AutoModel.from_pretrained(
-        "brain-bzh/reve-base", trust_remote_code=True, local_files_only=True,
+        str(reve_dir / "reve-base"), trust_remote_code=True,
     )
 
     reve_wrapper = REVEWithUnfreeze(

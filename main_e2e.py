@@ -16,6 +16,8 @@ def parse_args():
     parser.add_argument("--no_modelscope", dest="from_modelscope", action="store_false")
 
     # REVE
+    parser.add_argument("--reve_dir", type=str, default="models",
+                        help="Local directory containing reve-base/ and reve-positions/")
     parser.add_argument("--unfreeze_last_n", type=int, default=4,
                         help="Number of REVE transformer layers to unfreeze (from the end)")
     parser.add_argument("--reve_lr", type=float, default=3e-5,
@@ -62,6 +64,7 @@ def main():
         output_dir=args.output_dir,
         model_name=args.model_name,
         from_modelscope=args.from_modelscope,
+        reve_dir=args.reve_dir,
         unfreeze_last_n=args.unfreeze_last_n,
         reve_lr=args.reve_lr,
         lora_rank=args.lora_rank,

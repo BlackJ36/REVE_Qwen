@@ -20,6 +20,7 @@ def load_e2e_model_for_inference(
     checkpoint_dir,
     base_model_name="Qwen/Qwen3-VL-8B-Instruct",
     from_modelscope=True,
+    reve_dir="models",
     unfreeze_last_n=4,
     device="cuda",
 ):
@@ -37,13 +38,14 @@ def load_e2e_model_for_inference(
     """
     checkpoint_dir = Path(checkpoint_dir)
 
-    # Load REVE (local_files_only to avoid 401 on gated repos)
-    print("Loading REVE...")
+    # Load REVE from local directory
+    reve_dir = Path(reve_dir)
+    print(f"Loading REVE from {reve_dir}...")
     pos_bank = AutoModel.from_pretrained(
-        "brain-bzh/reve-positions", trust_remote_code=True, local_files_only=True,
+        str(reve_dir / "reve-positions"), trust_remote_code=True,
     )
     reve_model = AutoModel.from_pretrained(
-        "brain-bzh/reve-base", trust_remote_code=True, local_files_only=True,
+        str(reve_dir / "reve-base"), trust_remote_code=True,
     )
     reve_wrapper = REVEWithUnfreeze(
         reve_model, pos_bank, channel_names=VALID_CHANNEL_NAMES, unfreeze_last_n=unfreeze_last_n,
