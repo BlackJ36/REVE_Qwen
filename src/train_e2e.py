@@ -76,9 +76,9 @@ class BCIE2ETrainer(Trainer):
         if self.state.global_step <= warmup_steps:
             print(f"  Skipping checkpoint at step {self.state.global_step} (warmup ends at {warmup_steps})")
             return
-        super()._save_checkpoint(model, trial)
 
-        # Save best model based on eval_loss from log_history
+        # Skip Trainer's default save (DeepSpeed all-gather is very slow).
+        # Only save best model weights when eval_loss improves.
         if self.best_model_dir and self.state.log_history:
             for entry in reversed(self.state.log_history):
                 if "eval_loss" in entry:
