@@ -56,6 +56,9 @@ class BCIQwenForCausalLM(nn.Module):
         inputs_embeds = embed_layer(input_ids)
 
         if eeg_embeddings is not None:
+            # Ensure projector is on same device as embeddings
+            eeg_embeddings = eeg_embeddings.to(inputs_embeds.device)
+            self.projector = self.projector.to(inputs_embeds.device)
             projected = self.projector(eeg_embeddings)  # (B, qwen_dim)
 
             # Replace <|bci_pad|> placeholder embeddings with projected EEG

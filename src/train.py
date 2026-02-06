@@ -24,6 +24,22 @@ class BCITrainer(Trainer):
         loss = outputs.loss
         return (loss, outputs) if return_outputs else loss
 
+    def _save(self, output_dir=None, state_dict=None):
+        """Override to save projector separately and avoid tied weights issue."""
+        output_dir = output_dir if output_dir is not None else self.args.output_dir
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        # Save the PEFT model (LoRA adapter)
+        self.model.qwen.save_pretrained(output_dir, safe_serialization=True)
+
+        # Save projector separately
+        projector_path = Path(output_dir) / "projector.pt"
+        torch.save(self.model.projector.state_dict(), projector_path)
+
+        # Save tokenizer
+        if self.tokenizer is not None:
+            self.tokenizer.save_pretrained(output_dir)
+
 
 def run_training(
     embedding_dir="data/embeddings",
@@ -132,10 +148,21 @@ def run_training(
     print("Starting training...")
     trainer.train()
 
-    # Save final model
+    # Save final model (using our custom _save method)
     final_dir = Path(output_dir) / "final"
-    trainer.save_model(str(final_dir))
+    final_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save LoRA adapter
+    model.qwen.save_pretrained(str(final_dir), safe_serialization=True)
+
+    # Save projector
+    torch.save(model.projector.state_dict(), str(final_dir / "projector.pt"))
+
+    # Save tokenizer
     tokenizer.save_pretrained(str(final_dir))
+
     print(f"Model saved to {final_dir}")
+    print(f"  - LoRA adapter: {final_dir}/adapter_model.safetensors")
+    print(f"  - Projector: {final_dir}/projector.pt")
 
     return trainer
