@@ -71,20 +71,23 @@ class BCIE2ETrainer(Trainer):
 
         return self.optimizer
 
-    def _save_checkpoint(self, model, trial, metrics=None):
+    def _save_checkpoint(self, model, trial):
         warmup_steps = self.args.get_warmup_steps(self.state.max_steps)
         if self.state.global_step <= warmup_steps:
             print(f"  Skipping checkpoint at step {self.state.global_step} (warmup ends at {warmup_steps})")
             return
-        super()._save_checkpoint(model, trial, metrics=metrics)
+        super()._save_checkpoint(model, trial)
 
-        # Save best model based on eval_loss
-        if self.best_model_dir and metrics:
-            eval_loss = metrics.get("eval_loss")
-            if eval_loss is not None and eval_loss < self.best_eval_loss:
-                self.best_eval_loss = eval_loss
-                print(f"  New best eval_loss: {eval_loss:.4f}, saving to {self.best_model_dir}")
-                self._save_weights_only(self.best_model_dir)
+        # Save best model based on eval_loss from log_history
+        if self.best_model_dir and self.state.log_history:
+            for entry in reversed(self.state.log_history):
+                if "eval_loss" in entry:
+                    eval_loss = entry["eval_loss"]
+                    if eval_loss < self.best_eval_loss:
+                        self.best_eval_loss = eval_loss
+                        print(f"  New best eval_loss: {eval_loss:.4f}, saving to {self.best_model_dir}")
+                        self._save_weights_only(self.best_model_dir)
+                    break
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         eeg_tensor = inputs.pop("eeg_tensor", None)
