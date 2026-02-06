@@ -23,11 +23,14 @@ class BCIE2ETrainer(Trainer):
         - "full": delegates to Trainer's default save (all weights + optimizer + scheduler)
     """
 
-    def __init__(self, reve_lr=1e-5, projector_lr=1e-3, checkpoint_mode="weights_only", **kwargs):
+    def __init__(self, reve_lr=1e-5, projector_lr=1e-3, checkpoint_mode="weights_only",
+                 best_model_dir=None, **kwargs):
         super().__init__(**kwargs)
         self.reve_lr = reve_lr
         self.projector_lr = projector_lr
         self.checkpoint_mode = checkpoint_mode
+        self.best_model_dir = best_model_dir
+        self.best_eval_loss = float("inf")
 
     def create_optimizer(self):
         if self.optimizer is not None:
@@ -74,6 +77,14 @@ class BCIE2ETrainer(Trainer):
             print(f"  Skipping checkpoint at step {self.state.global_step} (warmup ends at {warmup_steps})")
             return
         super()._save_checkpoint(model, trial, metrics=metrics)
+
+        # Save best model based on eval_loss
+        if self.best_model_dir and metrics:
+            eval_loss = metrics.get("eval_loss")
+            if eval_loss is not None and eval_loss < self.best_eval_loss:
+                self.best_eval_loss = eval_loss
+                print(f"  New best eval_loss: {eval_loss:.4f}, saving to {self.best_model_dir}")
+                self._save_weights_only(self.best_model_dir)
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         eeg_tensor = inputs.pop("eeg_tensor", None)
@@ -213,6 +224,8 @@ def run_e2e_training(
     )
 
     callbacks = [EarlyStoppingCallback(early_stopping_patience=early_stopping_patience)]
+    best_dir = Path(output_dir) / "best"
+    best_dir.mkdir(parents=True, exist_ok=True)
     trainer = BCIE2ETrainer(
         model=model,
         args=training_args,
@@ -223,6 +236,7 @@ def run_e2e_training(
         reve_lr=reve_lr,
         projector_lr=projector_lr,
         checkpoint_mode=checkpoint_mode,
+        best_model_dir=str(best_dir),
     )
 
     # Print parameter summary
