@@ -63,20 +63,23 @@ class REVEWithUnfreeze(nn.Module):
             f"Top-level modules: {[n for n, _ in self.reve.named_children()]}"
         )
 
-    def forward(self, eeg_tensor, dtype=None):
+    def forward(self, eeg_tensor, output_dtype=None):
         """
         Args:
             eeg_tensor: (B, 62, 600) raw preprocessed EEG
-            dtype: target dtype (passed from outer model to match DeepSpeed's training dtype)
+            output_dtype: cast output to this dtype (e.g. bf16 for DeepSpeed training)
         Returns:
             (B, 512) pooled embedding
         """
         B = eeg_tensor.shape[0]
-        if dtype is not None:
-            eeg_tensor = eeg_tensor.to(dtype=dtype)
-        pos = self.electrode_positions.to(dtype=eeg_tensor.dtype).unsqueeze(0).expand(B, -1, -1)
+        # REVE internally forces float32 (eeg.float() + torch.arange().float()),
+        # so we run it in float32 and cast output to training dtype afterwards.
+        eeg_tensor = eeg_tensor.float()
+        pos = self.electrode_positions.float().unsqueeze(0).expand(B, -1, -1)
         output = self.reve(eeg_tensor, pos)  # (B, 62, patches, 512)
         pooled = self.reve.attention_pooling(output)  # (B, 512)
+        if output_dtype is not None:
+            pooled = pooled.to(dtype=output_dtype)
         return pooled
 
     @property
@@ -111,11 +114,10 @@ class BCIE2EQwenForCausalLM(nn.Module):
 
         if eeg_tensor is not None:
             eeg_tensor = eeg_tensor.to(device=inputs_embeds.device)
-            # REVE forward: (B, 62, 600) → (B, 512)
-            # Pass inputs_embeds.dtype so REVE matches DeepSpeed's training dtype
-            reve_emb = self.reve(eeg_tensor, dtype=inputs_embeds.dtype)
+            # REVE runs in float32 internally, output cast to training dtype
+            reve_emb = self.reve(eeg_tensor, output_dtype=inputs_embeds.dtype)
             # Project: (B, 512) → (B, qwen_dim)
-            projected = self.projector(reve_emb.to(inputs_embeds.dtype))
+            projected = self.projector(reve_emb)
 
             inputs_embeds = inputs_embeds.clone()
             bci_pad_mask = input_ids == self.bci_pad_id
