@@ -2,6 +2,7 @@
 
 import torch
 import torch.nn as nn
+from einops import rearrange
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModel, AutoModelForImageTextToText, AutoTokenizer
 
@@ -72,12 +73,33 @@ class REVEWithUnfreeze(nn.Module):
             (B, 512) pooled embedding
         """
         B = eeg_tensor.shape[0]
-        # REVE internally forces float32 (eeg.float() + torch.arange().float()),
-        # so we run it in float32 and cast output to training dtype afterwards.
-        eeg_tensor = eeg_tensor.float()
-        pos = self.electrode_positions.float().unsqueeze(0).expand(B, -1, -1)
-        output = self.reve(eeg_tensor, pos)  # (B, 62, patches, 512)
-        pooled = self.reve.attention_pooling(output)  # (B, 512)
+        reve = self.reve
+        pos = self.electrode_positions.unsqueeze(0).expand(B, -1, -1)  # (B, 62, 3)
+
+        # Bypass reve.forward() which hardcodes eeg.float() and
+        # FourierEmb4D.add_time_patch uses .float(). Call submodules
+        # directly to stay in whatever dtype DeepSpeed sets (bf16).
+        patches = eeg_tensor.unfold(
+            dimension=2, size=reve.patch_size, step=reve.patch_size - reve.overlap_size,
+        )
+        _b, c, h, _p = patches.shape
+
+        # dtype-preserving add_time_patch (original uses .float())
+        pos_rep = pos.unsqueeze(2).repeat(1, 1, h, 1)  # (B, C, h, 3)
+        t = torch.arange(h, device=pos.device, dtype=pos.dtype)
+        t = t.view(1, 1, h, 1).expand(B, c, h, 1)
+        pos4d = torch.cat([pos_rep, t], dim=-1).view(B, c * h, 4)  # (B, C*h, 4)
+
+        pos_embed = reve.ln(reve.fourier4d(pos4d) + reve.mlp4d(pos4d))
+        x = rearrange(
+            reve.to_patch_embedding(patches),
+            "b c h e -> b (c h) e", c=c, h=h, e=reve.embed_dim,
+        ) + pos_embed
+        x = reve.transformer(x, False)
+        x = rearrange(x, "b (c h) e -> b c h e", b=_b, c=c, h=h, e=reve.embed_dim)
+        x = reve.final_layer(x)
+
+        pooled = reve.attention_pooling(x)  # (B, 512)
         if output_dtype is not None:
             pooled = pooled.to(dtype=output_dtype)
         return pooled
