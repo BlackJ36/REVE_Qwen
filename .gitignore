@@ -26,3 +26,4 @@ output/
 # Model cache
 *.safetensors
 *.bin
+unsloth_compiled_cache/
