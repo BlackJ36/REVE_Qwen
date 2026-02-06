@@ -1,0 +1,28 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Data (large files - all raw and processed data)
+data/benchmark_raw/
+data/beta_raw/
+data/embeddings/
+data/Benchmark/
+data/BETA/
+*.mat
+*.pt
+*.7z
+*.tar.gz
+
+# Training output
+output/
+
+# Model cache
+*.safetensors
+*.bin
