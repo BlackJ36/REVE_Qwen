@@ -68,6 +68,13 @@ class BCIE2ETrainer(Trainer):
 
         return self.optimizer
 
+    def _save_checkpoint(self, model, trial, metrics=None):
+        warmup_steps = self.args.get_warmup_steps(self.state.max_steps)
+        if self.state.global_step <= warmup_steps:
+            print(f"  Skipping checkpoint at step {self.state.global_step} (warmup ends at {warmup_steps})")
+            return
+        super()._save_checkpoint(model, trial, metrics=metrics)
+
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         eeg_tensor = inputs.pop("eeg_tensor", None)
         outputs = model(
