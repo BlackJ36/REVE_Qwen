@@ -63,18 +63,18 @@ class REVEWithUnfreeze(nn.Module):
             f"Top-level modules: {[n for n, _ in self.reve.named_children()]}"
         )
 
-    def forward(self, eeg_tensor):
+    def forward(self, eeg_tensor, dtype=None):
         """
         Args:
             eeg_tensor: (B, 62, 600) raw preprocessed EEG
+            dtype: target dtype (passed from outer model to match DeepSpeed's training dtype)
         Returns:
             (B, 512) pooled embedding
         """
         B = eeg_tensor.shape[0]
-        # Cast inputs to match REVE's dtype (bf16)
-        dtype = self.electrode_positions.dtype
-        eeg_tensor = eeg_tensor.to(dtype=dtype)
-        pos = self.electrode_positions.unsqueeze(0).expand(B, -1, -1)
+        if dtype is not None:
+            eeg_tensor = eeg_tensor.to(dtype=dtype)
+        pos = self.electrode_positions.to(dtype=eeg_tensor.dtype).unsqueeze(0).expand(B, -1, -1)
         output = self.reve(eeg_tensor, pos)  # (B, 62, patches, 512)
         pooled = self.reve.attention_pooling(output)  # (B, 512)
         return pooled
@@ -110,9 +110,10 @@ class BCIE2EQwenForCausalLM(nn.Module):
         inputs_embeds = embed_layer(input_ids)
 
         if eeg_tensor is not None:
-            eeg_tensor = eeg_tensor.to(inputs_embeds.device)
+            eeg_tensor = eeg_tensor.to(device=inputs_embeds.device)
             # REVE forward: (B, 62, 600) → (B, 512)
-            reve_emb = self.reve(eeg_tensor)
+            # Pass inputs_embeds.dtype so REVE matches DeepSpeed's training dtype
+            reve_emb = self.reve(eeg_tensor, dtype=inputs_embeds.dtype)
             # Project: (B, 512) → (B, qwen_dim)
             projected = self.projector(reve_emb.to(inputs_embeds.dtype))
 
@@ -176,7 +177,6 @@ def build_e2e_model(
     reve_wrapper = REVEWithUnfreeze(
         reve_model, pos_bank, channel_names=VALID_CHANNEL_NAMES, unfreeze_last_n=unfreeze_last_n,
     )
-    reve_wrapper = reve_wrapper.to(torch.bfloat16)  # Match Qwen's dtype
 
     # --- Load Qwen ---
     if from_modelscope:
