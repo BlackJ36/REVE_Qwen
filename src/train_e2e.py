@@ -50,11 +50,15 @@ class BCIE2ETrainer(Trainer):
             else:
                 lora_params.append(param)
 
-        optimizer_grouped_parameters = [
-            {"params": reve_params, "lr": self.reve_lr},
-            {"params": projector_params, "lr": self.projector_lr},
-            {"params": lora_params, "lr": self.args.learning_rate},
-        ]
+        # Only include non-empty groups (DeepSpeed drops empty groups,
+        # causing scheduler mismatch if we include them)
+        optimizer_grouped_parameters = []
+        if reve_params:
+            optimizer_grouped_parameters.append({"params": reve_params, "lr": self.reve_lr})
+        if projector_params:
+            optimizer_grouped_parameters.append({"params": projector_params, "lr": self.projector_lr})
+        if lora_params:
+            optimizer_grouped_parameters.append({"params": lora_params, "lr": self.args.learning_rate})
 
         from torch.optim import AdamW
         self.optimizer = AdamW(
@@ -64,7 +68,7 @@ class BCIE2ETrainer(Trainer):
             weight_decay=self.args.weight_decay,
         )
 
-        print(f"E2E Optimizer:")
+        print(f"E2E Optimizer ({len(optimizer_grouped_parameters)} groups):")
         print(f"  REVE params: {len(reve_params)}, lr={self.reve_lr}")
         print(f"  Projector params: {len(projector_params)}, lr={self.projector_lr}")
         print(f"  LoRA params: {len(lora_params)}, lr={self.args.learning_rate}")
