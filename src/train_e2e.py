@@ -90,12 +90,14 @@ class BCIE2ETrainer(Trainer):
                     break
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        eeg_tensor = inputs.pop("eeg_tensor", None)
+        eeg_windows = inputs.pop("eeg_windows", None)
+        window_counts = inputs.pop("window_counts", None)
         outputs = model(
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
             labels=inputs["labels"],
-            eeg_tensor=eeg_tensor,
+            eeg_windows=eeg_windows,
+            window_counts=window_counts,
         )
         loss = outputs.loss
         return (loss, outputs) if return_outputs else loss
@@ -160,7 +162,7 @@ def run_e2e_training(
     # REVE
     reve_dir="models",
     unfreeze_last_n=4,
-    num_eeg_tokens=186,
+    num_eeg_tokens=62,
     reve_lr=3e-5,
     # LoRA
     lora_rank=64,
@@ -179,6 +181,11 @@ def run_e2e_training(
     checkpoint_mode="weights_only",
     # DeepSpeed
     deepspeed_config="configs/ds_zero2.json",
+    # Multi-spell
+    min_spells=5,
+    max_spells=10,
+    window_size=300,
+    window_step=100,
 ):
     """End-to-end training entry point."""
     eeg_dir = Path(eeg_dir)
@@ -197,8 +204,16 @@ def run_e2e_training(
     )
 
     print("Loading E2E datasets...")
-    train_dataset = BCIE2EDataset(eeg_dir, tokenizer, split="train", num_eeg_tokens=num_eeg_tokens)
-    val_dataset = BCIE2EDataset(eeg_dir, tokenizer, split="val", num_eeg_tokens=num_eeg_tokens)
+    train_dataset = BCIE2EDataset(
+        eeg_dir, tokenizer, split="train", num_eeg_tokens=num_eeg_tokens,
+        min_spells=min_spells, max_spells=max_spells,
+        window_size=window_size, window_step=window_step,
+    )
+    val_dataset = BCIE2EDataset(
+        eeg_dir, tokenizer, split="val", num_eeg_tokens=num_eeg_tokens,
+        min_spells=min_spells, max_spells=max_spells,
+        window_size=window_size, window_step=window_step,
+    )
     collator = BCIE2EDataCollator(tokenizer)
 
     training_args = TrainingArguments(

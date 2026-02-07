@@ -20,8 +20,8 @@ def parse_args():
                         help="Local directory containing reve-base/ and reve-positions/")
     parser.add_argument("--unfreeze_last_n", type=int, default=4,
                         help="Number of REVE transformer layers to unfreeze (from the end)")
-    parser.add_argument("--num_eeg_tokens", type=int, default=186,
-                        help="EEG tokens per trial: 1=pooled (variant A), 186=all patches (variant B)")
+    parser.add_argument("--num_eeg_tokens", type=int, default=62,
+                        help="EEG tokens per window (62 channels × 1 patch for 1.5s windows)")
     parser.add_argument("--reve_lr", type=float, default=3e-5,
                         help="Learning rate for REVE unfrozen layers")
 
@@ -42,6 +42,16 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--early_stopping_patience", type=int, default=5)
     parser.add_argument("--warmup_ratio", type=float, default=0.1)
+
+    # Multi-spell
+    parser.add_argument("--min_spells", type=int, default=5,
+                        help="Min spells per training sequence")
+    parser.add_argument("--max_spells", type=int, default=10,
+                        help="Max spells per training sequence")
+    parser.add_argument("--window_size", type=int, default=300,
+                        help="Sliding window size in timepoints (300 = 1.5s @ 200Hz)")
+    parser.add_argument("--window_step", type=int, default=100,
+                        help="Sliding window step in timepoints (100 = 0.5s @ 200Hz)")
 
     # Checkpoint
     parser.add_argument("--checkpoint_mode", type=str, default="weights_only",
@@ -83,6 +93,10 @@ def main():
         warmup_ratio=args.warmup_ratio,
         checkpoint_mode=args.checkpoint_mode,
         deepspeed_config=args.deepspeed if not args.use_4bit else None,
+        min_spells=args.min_spells,
+        max_spells=args.max_spells,
+        window_size=args.window_size,
+        window_step=args.window_step,
     )
 
 

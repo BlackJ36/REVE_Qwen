@@ -67,11 +67,12 @@ class REVEWithUnfreeze(nn.Module):
     def forward(self, eeg_tensor, output_dtype=None, pool=True):
         """
         Args:
-            eeg_tensor: (B, 62, 600) raw preprocessed EEG
+            eeg_tensor: (B, 62, T) raw preprocessed EEG (T=600 for 3s, T=300 for 1.5s windows)
             output_dtype: cast output to this dtype (e.g. bf16 for DeepSpeed training)
             pool: if True return (B, 512) pooled; if False return (B, N, 512) all tokens
         Returns:
-            (B, 512) if pool=True, (B, N, 512) if pool=False (N=62*patches=186)
+            (B, 512) if pool=True, (B, N, 512) if pool=False
+            N = 62 * patches (patches=3 for T=600, patches=1 for T=300)
         """
         B = eeg_tensor.shape[0]
         reve = self.reve
@@ -129,34 +130,41 @@ class BCIE2EQwenForCausalLM(nn.Module):
     def get_input_embeddings(self):
         return self.qwen.get_input_embeddings()
 
-    def forward(self, input_ids, attention_mask=None, labels=None, eeg_tensor=None, **kwargs):
+    def forward(self, input_ids, attention_mask=None, labels=None,
+                eeg_windows=None, window_counts=None, **kwargs):
         """
         Args:
             input_ids: (B, L) token IDs with <|bci_pad|> placeholders
             attention_mask: (B, L)
             labels: (B, L) with -100 for non-target positions
-            eeg_tensor: (B, 62, 600) raw EEG signals
+            eeg_windows: (total_K, 62, window_size) all EEG windows concatenated
+            window_counts: (B,) number of windows per sample
         """
         embed_layer = self.qwen.get_input_embeddings()
         inputs_embeds = embed_layer(input_ids)
 
-        if eeg_tensor is not None:
-            eeg_tensor = eeg_tensor.to(device=inputs_embeds.device)
-            pool = self.num_eeg_tokens == 1
-            reve_emb = self.reve(eeg_tensor, output_dtype=inputs_embeds.dtype, pool=pool)
-            # Project: (B, [N,] 512) → (B, [N,] qwen_dim)
-            projected = self.projector(reve_emb)
+        if eeg_windows is not None:
+            eeg_windows = eeg_windows.to(device=inputs_embeds.device)
+            # Process ALL windows in one REVE batch
+            # (total_K, 62, 300) → (total_K, 62, 512) with pool=False
+            reve_out = self.reve(eeg_windows, output_dtype=inputs_embeds.dtype, pool=False)
+            # (total_K, N_tokens, 512) → (total_K, N_tokens, qwen_dim)
+            projected = self.projector(reve_out)
 
             inputs_embeds = inputs_embeds.clone()
             bci_pad_mask = input_ids == self.bci_pad_id
-            for i in range(input_ids.size(0)):
+            B = input_ids.size(0)
+            qwen_dim = projected.size(-1)
+
+            offset = 0
+            for i in range(B):
+                K_i = int(window_counts[i])
+                # Flatten K_i windows of N tokens each → (K_i * N, qwen_dim)
+                sample_tokens = projected[offset:offset + K_i].reshape(-1, qwen_dim)
                 pad_positions = bci_pad_mask[i].nonzero(as_tuple=True)[0]
-                if pool:
-                    if len(pad_positions) > 0:
-                        inputs_embeds[i, pad_positions[0]] = projected[i]
-                else:
-                    n = min(len(pad_positions), projected.size(1))
-                    inputs_embeds[i, pad_positions[:n]] = projected[i, :n]
+                n = min(len(pad_positions), sample_tokens.size(0))
+                inputs_embeds[i, pad_positions[:n]] = sample_tokens[:n]
+                offset += K_i
 
         return self.qwen(
             inputs_embeds=inputs_embeds,
@@ -187,7 +195,7 @@ def build_e2e_model(
     reve_dir="models",
     reve_dim=512,
     unfreeze_last_n=4,
-    num_eeg_tokens=186,
+    num_eeg_tokens=62,
     lora_rank=64,
     lora_alpha=128,
     lora_dropout=0.05,
@@ -275,7 +283,7 @@ def build_e2e_model(
 
     # --- Assemble ---
     model = BCIE2EQwenForCausalLM(reve_wrapper, qwen_model, tokenizer, projector, num_eeg_tokens=num_eeg_tokens)
-    print(f"EEG tokens per trial: {num_eeg_tokens} ({'pooled' if num_eeg_tokens == 1 else 'all patches'})")
+    print(f"EEG tokens per window: {num_eeg_tokens}")
 
     if not use_4bit:
         model.gradient_checkpointing_enable()

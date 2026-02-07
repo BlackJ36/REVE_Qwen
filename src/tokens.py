@@ -5,8 +5,9 @@ BCI_START = "<|bci_start|>"
 BCI_END = "<|bci_end|>"
 BCI_SEP = "<|bci_sep|>"
 BCI_PAD = "<|bci_pad|>"
+BCI_TRANS = "<|bci_trans|>"
 
-CONTROL_TOKENS = [BCI_START, BCI_END, BCI_SEP, BCI_PAD]
+CONTROL_TOKENS = [BCI_START, BCI_END, BCI_SEP, BCI_PAD, BCI_TRANS]
 
 # Target tokens: 40 SSVEP targets
 TARGET_TOKENS = [f"<|t{i:02d}|>" for i in range(1, 41)]
