@@ -35,13 +35,13 @@ uv run deepspeed \
     --from_modelscope \
     --unfreeze_last_n ${UNFREEZE} \
     --num_eeg_tokens ${NUM_EEG_TOKENS} \
-    --reve_lr 1e-5 \
+    --reve_lr 3e-5 \
     --lora_rank 64 \
     --lora_alpha 128 \
     --batch_size ${BATCH_SIZE} \
     --grad_accum ${GRAD_ACCUM} \
-    --lr 2e-4 \
-    --projector_lr 1e-3 \
+    --lr 5e-4 \
+    --projector_lr 3e-3 \
     --epochs ${EPOCHS} \
     --early_stopping_patience 5 \
     --warmup_ratio 0.1 \
