@@ -37,15 +37,17 @@ class REVEWithUnfreeze(nn.Module):
         for i in range(unfreeze_from, n_layers):
             layers[i].requires_grad_(True)
 
-        # Unfreeze attention pooling components (cls_query_token, final ln)
-        if hasattr(self.reve, "cls_query_token"):
-            self.reve.cls_query_token.requires_grad_(True)
-        if hasattr(self.reve, "ln"):
-            self.reve.ln.requires_grad_(True)
+        # Unfreeze attention pooling components only when fine-tuning layers
+        if unfreeze_last_n > 0:
+            if hasattr(self.reve, "cls_query_token"):
+                self.reve.cls_query_token.requires_grad_(True)
+            if hasattr(self.reve, "ln"):
+                self.reve.ln.requires_grad_(True)
 
         unfrozen = sum(p.numel() for p in self.parameters() if p.requires_grad)
         total = sum(p.numel() for p in self.parameters())
-        print(f"REVE: unfroze last {unfreeze_last_n}/{n_layers} layers + pooling")
+        mode = "fully frozen" if unfreeze_last_n == 0 else f"unfroze last {unfreeze_last_n}/{n_layers} layers + pooling"
+        print(f"REVE: {mode}")
         print(f"  Trainable: {unfrozen:,} / {total:,} ({100*unfrozen/total:.1f}%)")
 
     def _get_layers(self):
