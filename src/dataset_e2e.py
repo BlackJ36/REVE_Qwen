@@ -111,7 +111,10 @@ class BCIE2EDataset(Dataset):
         self.im_end_ids = self.tokenizer.encode("<|im_end|>", add_special_tokens=False)
 
     def __len__(self):
-        return len(self.group_keys)
+        # Use trial count (not group count) to keep epoch length reasonable.
+        # Each __getitem__ is stochastic (random K, random trials, random windows),
+        # so repeated group visits produce different sequences.
+        return len(self.eeg_data)
 
     def __getitem__(self, idx):
         group_key = self.group_keys[idx % len(self.group_keys)]

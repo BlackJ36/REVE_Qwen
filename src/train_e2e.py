@@ -163,7 +163,7 @@ def run_e2e_training(
     reve_dir="models",
     unfreeze_last_n=4,
     num_eeg_tokens=62,
-    reve_lr=3e-5,
+    reve_lr=1e-5,
     # LoRA
     lora_rank=64,
     lora_alpha=128,
@@ -171,10 +171,10 @@ def run_e2e_training(
     # Quantization
     use_4bit=False,
     # Training
-    per_device_batch_size=128,
-    gradient_accumulation_steps=1,
-    learning_rate=5e-4,
-    projector_lr=3e-3,
+    per_device_batch_size=8,
+    gradient_accumulation_steps=4,
+    learning_rate=2e-4,
+    projector_lr=1e-3,
     num_epochs=30,
     early_stopping_patience=5,
     warmup_ratio=0.1,

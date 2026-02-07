@@ -13,8 +13,8 @@ export TOKENIZERS_PARALLELISM=true
 
 NUM_GPUS=${NUM_GPUS:-4}
 NUM_EEG_TOKENS=${NUM_EEG_TOKENS:-62}
-BATCH_SIZE=${BATCH_SIZE:-16}
-GRAD_ACCUM=${GRAD_ACCUM:-8}
+BATCH_SIZE=${BATCH_SIZE:-8}
+GRAD_ACCUM=${GRAD_ACCUM:-4}
 EPOCHS=${EPOCHS:-30}
 UNFREEZE=${UNFREEZE:-4}
 MIN_SPELLS=${MIN_SPELLS:-5}
@@ -35,13 +35,13 @@ uv run deepspeed \
     --from_modelscope \
     --unfreeze_last_n ${UNFREEZE} \
     --num_eeg_tokens ${NUM_EEG_TOKENS} \
-    --reve_lr 3e-5 \
+    --reve_lr 1e-5 \
     --lora_rank 64 \
     --lora_alpha 128 \
     --batch_size ${BATCH_SIZE} \
     --grad_accum ${GRAD_ACCUM} \
-    --lr 5e-4 \
-    --projector_lr 3e-3 \
+    --lr 2e-4 \
+    --projector_lr 1e-3 \
     --epochs ${EPOCHS} \
     --early_stopping_patience 5 \
     --warmup_ratio 0.1 \
