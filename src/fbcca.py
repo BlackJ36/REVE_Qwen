@@ -17,8 +17,9 @@ import torch
 import torch.nn as nn
 
 
-# 40 SSVEP target frequencies (Hz)
-SSVEP_FREQS = [8.0 + 0.2 * i for i in range(40)]
+# 40 SSVEP target frequencies in data label order (5×8 grid, row-major)
+# Row i, Col j: freq = 8.0 + j*1.0 + i*0.2, label = i*8 + j
+SSVEP_FREQS = [8.0 + (i % 8) * 1.0 + (i // 8) * 0.2 for i in range(40)]
 
 # 5 filter sub-bands: [low_cutoff, high_cutoff] in Hz
 FILTER_BANDS = [
