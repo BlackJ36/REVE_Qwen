@@ -18,9 +18,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn as nn
 from einops import rearrange
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, balanced_accuracy_score
+from torch.utils.data import DataLoader, TensorDataset
 from transformers import AutoModel
 
 from src.preprocess import VALID_CHANNEL_NAMES
@@ -110,7 +110,7 @@ def extract_features(reve, positions, eeg_data, batch_size=64, pool=True, mean_t
         feat = reve_forward(reve, positions, batch, pool=pool)
         if mean_tokens and not pool:
             feat = feat.mean(dim=1)  # (B, 512)
-        features.append(feat.cpu().numpy())
+        features.append(feat)
 
         if (idx + 1) % 10 == 0 or idx == n_batches - 1:
             elapsed = time.time() - t0
@@ -120,43 +120,103 @@ def extract_features(reve, positions, eeg_data, batch_size=64, pool=True, mean_t
 
     total_time = time.time() - t0
     log(f"    Done: {n} samples in {total_time:.1f}s ({n / total_time:.0f} samples/s)")
-    return np.concatenate(features, axis=0)
+    return torch.cat(features, dim=0)  # stays on GPU
 
 
-def run_probe(name, train_feat, train_labels, val_feat, val_labels):
-    """Fit LogisticRegression and report results."""
+def run_probe(name, train_feat, train_labels, val_feat, val_labels,
+              n_classes=40, epochs=100, lr=0.01, batch_size=1024):
+    """Train a linear probe on GPU with SGD and report results."""
     log(f"\n{'=' * 60}")
     log(f"  {name}")
     log(f"{'=' * 60}")
-    log(f"  Feature shape: {train_feat.shape}")
+    log(f"  Feature shape: {tuple(train_feat.shape)}")
     log(f"  Feature stats: mean={train_feat.mean():.4f}, std={train_feat.std():.4f}, "
         f"min={train_feat.min():.4f}, max={train_feat.max():.4f}")
 
-    log(f"  Fitting LogisticRegression (max_iter=5000)...")
+    device = train_feat.device
+    feat_dim = train_feat.shape[1]
+
+    # Normalize features (important for linear probe)
+    mean = train_feat.mean(dim=0, keepdim=True)
+    std = train_feat.std(dim=0, keepdim=True).clamp(min=1e-6)
+    train_norm = (train_feat - mean) / std
+    val_norm = (val_feat - mean) / std
+
+    train_labels_t = torch.tensor(train_labels, dtype=torch.long, device=device)
+    val_labels_t = torch.tensor(val_labels, dtype=torch.long, device=device)
+
+    # Linear layer on GPU
+    linear = nn.Linear(feat_dim, n_classes).to(device)
+    optimizer = torch.optim.SGD(linear.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    criterion = nn.CrossEntropyLoss()
+
+    train_ds = TensorDataset(train_norm, train_labels_t)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+
+    log(f"  Training linear probe: {feat_dim} -> {n_classes}, "
+        f"epochs={epochs}, lr={lr}, batch={batch_size}")
+
     t0 = time.time()
-    clf = LogisticRegression(max_iter=5000, C=1.0, solver="lbfgs")
-    clf.fit(train_feat, train_labels)
+    best_val_acc = 0.0
+
+    for epoch in range(epochs):
+        linear.train()
+        total_loss = 0.0
+        for feat_batch, label_batch in train_loader:
+            logits = linear(feat_batch)
+            loss = criterion(logits, label_batch)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        scheduler.step()
+
+        # Evaluate every 10 epochs or last epoch
+        if (epoch + 1) % 10 == 0 or epoch == epochs - 1:
+            linear.eval()
+            with torch.no_grad():
+                train_logits = linear(train_norm)
+                val_logits = linear(val_norm)
+                train_acc = (train_logits.argmax(1) == train_labels_t).float().mean().item()
+                val_acc = (val_logits.argmax(1) == val_labels_t).float().mean().item()
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+            avg_loss = total_loss / len(train_loader)
+            log(f"    Epoch {epoch + 1:3d}/{epochs}: loss={avg_loss:.4f}, "
+                f"train_acc={train_acc:.4f}, val_acc={val_acc:.4f}")
+
     fit_time = time.time() - t0
-    log(f"  Fit completed in {fit_time:.1f}s")
 
-    train_pred = clf.predict(train_feat)
-    val_pred = clf.predict(val_feat)
-
-    train_acc = accuracy_score(train_labels, train_pred)
-    val_acc = accuracy_score(val_labels, val_pred)
-    val_bal = balanced_accuracy_score(val_labels, val_pred)
+    # Final evaluation
+    linear.eval()
+    with torch.no_grad():
+        train_pred = linear(train_norm).argmax(1)
+        val_pred = linear(val_norm).argmax(1)
+        train_acc = (train_pred == train_labels_t).float().mean().item()
+        val_acc = (val_pred == val_labels_t).float().mean().item()
+        # Balanced accuracy (per-class mean)
+        per_class_acc = []
+        for c in range(n_classes):
+            mask = val_labels_t == c
+            if mask.sum() > 0:
+                per_class_acc.append((val_pred[mask] == c).float().mean().item())
+        val_bal = np.mean(per_class_acc)
 
     log(f"  ----------------------------------------")
     log(f"  Train accuracy:       {train_acc:.4f} ({train_acc * 100:.1f}%)")
     log(f"  Val accuracy:         {val_acc:.4f} ({val_acc * 100:.1f}%)")
     log(f"  Val balanced acc:     {val_bal:.4f} ({val_bal * 100:.1f}%)")
+    log(f"  Best val accuracy:    {best_val_acc:.4f} ({best_val_acc * 100:.1f}%)")
     log(f"  Random baseline:      {1 / 40:.4f} (2.5%)")
+    log(f"  Time: {fit_time:.1f}s")
     log(f"  ----------------------------------------")
 
     return {
         "name": name,
         "train_acc": float(train_acc),
         "val_acc": float(val_acc),
+        "best_val_acc": float(best_val_acc),
         "val_balanced_acc": float(val_bal),
         "fit_time_s": round(fit_time, 1),
         "feature_shape": list(train_feat.shape),
