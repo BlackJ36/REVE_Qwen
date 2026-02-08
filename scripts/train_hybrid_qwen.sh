@@ -6,9 +6,9 @@
 set -e
 
 NUM_GPUS=4
-BATCH_SIZE=32
-GRAD_ACCUM=4
-# Effective batch size: 4 * 32 * 4 = 512
+BATCH_SIZE=128
+GRAD_ACCUM=1
+# Effective batch size: 4 * 128 * 1 = 512
 EPOCHS=30
 LR=2e-5
 PROJECTOR_LR=1e-3

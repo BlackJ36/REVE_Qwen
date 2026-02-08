@@ -167,7 +167,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--eeg_dir", default="data/eeg_tensors")
     parser.add_argument("--output_dir", default="output_probe")
-    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--batch_size", type=int, default=2048)
     parser.add_argument("--window_size", type=int, default=None,
                         help="If set, test only this window size (e.g. 300 for 1.5s)")
     args = parser.parse_args()
