@@ -230,11 +230,15 @@ def run_stage1_training(
 
     # Print parameter summary
     enc_p = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and "encoder." in n)
-    emb_p = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and ("embed_tokens" in n or "lm_head" in n))
+    # embed_tokens has requires_grad=True on the full tensor, but gradient hook
+    # masks original rows — only new BCI token rows actually update
+    from .tokens import ALL_SPECIAL_TOKENS
+    llm_dim = model.qwen.config.hidden_size
+    emb_effective = len(ALL_SPECIAL_TOKENS) * llm_dim
     print(f"\nTrainable parameters (Stage 1):")
     print(f"  Encoder (FiLM+proj): {enc_p:>12,}  (lr={encoder_lr})")
-    print(f"  Embeddings:          {emb_p:>12,}  (lr={learning_rate})")
-    print(f"  Total:               {enc_p + emb_p:>12,}\n")
+    print(f"  New token embeddings:{emb_effective:>12,}  (lr={learning_rate}, {len(ALL_SPECIAL_TOKENS)} tokens × {llm_dim}d)")
+    print(f"  Total effective:     {enc_p + emb_effective:>12,}\n")
 
     print("Starting Stage 1 training...")
     trainer.train()
