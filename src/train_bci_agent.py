@@ -1,0 +1,356 @@
+"""Two-stage training for BCI agent.
+
+Stage 1 (alignment): Qwen frozen, train FiLM encoder + projector + embeddings
+Stage 2 (instruction tuning): Qwen LoRA, train encoder + LoRA, mixed data
+"""
+
+import json
+from pathlib import Path
+
+import torch
+from transformers import Trainer, TrainingArguments
+
+from .dataset_bci_agent import (
+    BCIAgentCollator,
+    BCIAgentStage1Dataset,
+    BCIAgentStage2Dataset,
+)
+from .model_bci_agent import build_bci_agent_model
+
+
+class BCIAgentTrainer(Trainer):
+    """Trainer with separate LR groups for encoder and LLM components.
+
+    LR groups vary by stage:
+      Stage 1: encoder (FiLM + projector), embeddings
+      Stage 2: encoder (FiLM + projector), LoRA, embeddings
+    """
+
+    def __init__(self, encoder_lr=1e-3, best_model_dir=None, **kwargs):
+        super().__init__(**kwargs)
+        self.encoder_lr = encoder_lr
+        self.best_model_dir = best_model_dir
+        self.best_eval_loss = float("inf")
+
+    def create_optimizer(self):
+        if self.optimizer is not None:
+            return self.optimizer
+
+        encoder_params = []
+        embed_params = []
+        lora_params = []
+
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad:
+                continue
+            if "encoder." in name:
+                encoder_params.append(param)
+            elif "embed_tokens" in name or "lm_head" in name:
+                embed_params.append(param)
+            else:
+                lora_params.append(param)
+
+        groups = []
+        if encoder_params:
+            groups.append({"params": encoder_params, "lr": self.encoder_lr})
+        if embed_params:
+            groups.append({"params": embed_params, "lr": self.args.learning_rate})
+        if lora_params:
+            groups.append({"params": lora_params, "lr": self.args.learning_rate})
+
+        from torch.optim import AdamW
+        self.optimizer = AdamW(
+            groups,
+            betas=(0.9, 0.999),
+            eps=1e-8,
+            weight_decay=self.args.weight_decay,
+        )
+
+        print(f"BCIAgent Optimizer ({len(groups)} groups):")
+        print(f"  Encoder (FiLM+proj): {len(encoder_params)} params, lr={self.encoder_lr}")
+        print(f"  Embeddings:          {len(embed_params)} params, lr={self.args.learning_rate}")
+        if lora_params:
+            print(f"  LoRA:                {len(lora_params)} params, lr={self.args.learning_rate}")
+
+        return self.optimizer
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        eeg_windows = inputs.pop("eeg_windows", None)
+        window_counts = inputs.pop("window_counts", None)
+
+        outputs = model(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            labels=inputs["labels"],
+            eeg_windows=eeg_windows if eeg_windows is not None and eeg_windows.numel() > 0 else None,
+            window_counts=window_counts,
+        )
+        loss = outputs.loss
+        return (loss, outputs) if return_outputs else loss
+
+    def _save_checkpoint(self, model, trial):
+        warmup_steps = self.args.get_warmup_steps(self.state.max_steps)
+        if self.state.global_step <= warmup_steps:
+            return
+
+        if self.best_model_dir and self.state.log_history:
+            for entry in reversed(self.state.log_history):
+                if "eval_loss" in entry:
+                    current_loss = entry["eval_loss"]
+                    if current_loss < self.best_eval_loss:
+                        self.best_eval_loss = current_loss
+                        print(f"  New best: {current_loss:.4f}, saving to {self.best_model_dir}")
+                        self._save_weights(self.best_model_dir)
+                    break
+
+    def _save(self, output_dir=None, state_dict=None):
+        output_dir = output_dir if output_dir is not None else self.args.output_dir
+        self._save_weights(output_dir)
+
+    def _save_weights(self, output_dir):
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        self.model.save_pretrained(str(output_dir))
+
+
+def run_stage1_training(
+    eeg_dir="data/eeg_tensors",
+    output_dir="output_bci_agent_s1",
+    model_name="Qwen/Qwen3-4B-Instruct",
+    from_modelscope=True,
+    reve_dir="models",
+    # Training
+    per_device_batch_size=64,
+    gradient_accumulation_steps=2,
+    learning_rate=5e-4,
+    encoder_lr=1e-3,
+    num_epochs=10,
+    warmup_ratio=0.1,
+    # Multi-spell
+    min_spells=5,
+    max_spells=10,
+    window_size=300,
+    window_step=100,
+    num_eeg_tokens=62,
+    # DeepSpeed
+    deepspeed_config="configs/ds_zero2.json",
+):
+    """Stage 1: Alignment training.
+
+    Trains FiLM encoder + projector + embed_tokens/lm_head.
+    Qwen transformer layers are frozen.
+    """
+    print("=" * 60)
+    print("Stage 1: Alignment Training")
+    print("=" * 60)
+
+    print("\nBuilding model (Stage 1)...")
+    model, tokenizer = build_bci_agent_model(
+        model_name=model_name,
+        from_modelscope=from_modelscope,
+        reve_dir=reve_dir,
+        stage=1,
+        window_size=window_size,
+    )
+
+    print("\nLoading datasets...")
+    train_dataset = BCIAgentStage1Dataset(
+        eeg_dir, tokenizer, split="train",
+        num_eeg_tokens=num_eeg_tokens,
+        min_spells=min_spells, max_spells=max_spells,
+        window_size=window_size, window_step=window_step,
+    )
+    val_dataset = BCIAgentStage1Dataset(
+        eeg_dir, tokenizer, split="val",
+        num_eeg_tokens=num_eeg_tokens,
+        min_spells=min_spells, max_spells=max_spells,
+        window_size=window_size, window_step=window_step,
+    )
+    collator = BCIAgentCollator(tokenizer)
+
+    training_args = TrainingArguments(
+        output_dir=output_dir,
+        num_train_epochs=num_epochs,
+        per_device_train_batch_size=per_device_batch_size,
+        per_device_eval_batch_size=per_device_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        learning_rate=learning_rate,
+        warmup_ratio=warmup_ratio,
+        lr_scheduler_type="cosine",
+        bf16=True,
+        logging_steps=10,
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        save_total_limit=2,
+        load_best_model_at_end=False,
+        report_to="tensorboard",
+        logging_dir=f"{output_dir}/logs",
+        dataloader_num_workers=4,
+        dataloader_pin_memory=True,
+        deepspeed=deepspeed_config,
+        remove_unused_columns=False,
+    )
+
+    best_dir = Path(output_dir) / "best"
+    best_dir.mkdir(parents=True, exist_ok=True)
+
+    trainer = BCIAgentTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
+        data_collator=collator,
+        encoder_lr=encoder_lr,
+        best_model_dir=str(best_dir),
+    )
+
+    # Print parameter summary
+    enc_p = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and "encoder." in n)
+    emb_p = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and ("embed_tokens" in n or "lm_head" in n))
+    print(f"\nTrainable parameters (Stage 1):")
+    print(f"  Encoder (FiLM+proj): {enc_p:>12,}  (lr={encoder_lr})")
+    print(f"  Embeddings:          {emb_p:>12,}  (lr={learning_rate})")
+    print(f"  Total:               {enc_p + emb_p:>12,}\n")
+
+    print("Starting Stage 1 training...")
+    trainer.train()
+
+    # Save final
+    final_dir = Path(output_dir) / "final"
+    trainer._save_weights(str(final_dir))
+    print(f"\nStage 1 complete. Model saved to {final_dir}")
+
+    return trainer
+
+
+def run_stage2_training(
+    eeg_dir="data/eeg_tensors",
+    output_dir="output_bci_agent_s2",
+    model_name="Qwen/Qwen3-4B-Instruct",
+    from_modelscope=True,
+    reve_dir="models",
+    # Stage 1 checkpoint
+    stage1_checkpoint=None,
+    # LoRA
+    lora_rank=32,
+    lora_alpha=64,
+    lora_dropout=0.05,
+    # Training
+    per_device_batch_size=32,
+    gradient_accumulation_steps=4,
+    learning_rate=2e-5,
+    encoder_lr=5e-4,
+    num_epochs=5,
+    warmup_ratio=0.1,
+    # Data
+    nl_data_path=None,
+    type_weights=None,
+    # Multi-spell
+    min_spells=3,
+    max_spells=8,
+    window_size=300,
+    window_step=100,
+    num_eeg_tokens=62,
+    # DeepSpeed
+    deepspeed_config="configs/ds_zero2.json",
+):
+    """Stage 2: Instruction tuning with LoRA.
+
+    Loads encoder from Stage 1, applies LoRA to Qwen, trains with mixed data.
+    """
+    print("=" * 60)
+    print("Stage 2: Instruction Tuning")
+    print("=" * 60)
+
+    if stage1_checkpoint is None:
+        print("WARNING: No Stage 1 checkpoint specified. Training encoder from scratch.")
+
+    print("\nBuilding model (Stage 2)...")
+    model, tokenizer = build_bci_agent_model(
+        model_name=model_name,
+        from_modelscope=from_modelscope,
+        reve_dir=reve_dir,
+        stage=2,
+        stage1_checkpoint=stage1_checkpoint,
+        lora_rank=lora_rank,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        window_size=window_size,
+    )
+
+    print("\nLoading datasets...")
+    train_dataset = BCIAgentStage2Dataset(
+        eeg_dir, tokenizer, split="train",
+        nl_data_path=nl_data_path,
+        weights=type_weights,
+        num_eeg_tokens=num_eeg_tokens,
+        min_spells=min_spells, max_spells=max_spells,
+        window_size=window_size, window_step=window_step,
+    )
+    val_dataset = BCIAgentStage2Dataset(
+        eeg_dir, tokenizer, split="val",
+        nl_data_path=nl_data_path,
+        weights=type_weights,
+        num_eeg_tokens=num_eeg_tokens,
+        min_spells=min_spells, max_spells=max_spells,
+        window_size=window_size, window_step=window_step,
+    )
+    collator = BCIAgentCollator(tokenizer)
+
+    training_args = TrainingArguments(
+        output_dir=output_dir,
+        num_train_epochs=num_epochs,
+        per_device_train_batch_size=per_device_batch_size,
+        per_device_eval_batch_size=per_device_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        learning_rate=learning_rate,
+        warmup_ratio=warmup_ratio,
+        lr_scheduler_type="cosine",
+        bf16=True,
+        logging_steps=10,
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        save_total_limit=2,
+        load_best_model_at_end=False,
+        report_to="tensorboard",
+        logging_dir=f"{output_dir}/logs",
+        dataloader_num_workers=4,
+        dataloader_pin_memory=True,
+        deepspeed=deepspeed_config,
+        remove_unused_columns=False,
+    )
+
+    best_dir = Path(output_dir) / "best"
+    best_dir.mkdir(parents=True, exist_ok=True)
+
+    trainer = BCIAgentTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
+        data_collator=collator,
+        encoder_lr=encoder_lr,
+        best_model_dir=str(best_dir),
+    )
+
+    # Print parameter summary
+    enc_p = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and "encoder." in n)
+    lora_p = sum(
+        p.numel() for n, p in model.named_parameters()
+        if p.requires_grad and "encoder." not in n and "embed_tokens" not in n and "lm_head" not in n
+    )
+    emb_p = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and ("embed_tokens" in n or "lm_head" in n))
+    print(f"\nTrainable parameters (Stage 2):")
+    print(f"  Encoder (FiLM+proj): {enc_p:>12,}  (lr={encoder_lr})")
+    print(f"  LoRA:                {lora_p:>12,}  (lr={learning_rate})")
+    print(f"  Embeddings:          {emb_p:>12,}  (lr={learning_rate})")
+    print(f"  Total:               {enc_p + lora_p + emb_p:>12,}\n")
+
+    print("Starting Stage 2 training...")
+    trainer.train()
+
+    final_dir = Path(output_dir) / "final"
+    trainer._save_weights(str(final_dir))
+    print(f"\nStage 2 complete. Model saved to {final_dir}")
+
+    return trainer
