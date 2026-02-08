@@ -32,15 +32,15 @@ VALID_CHANNEL_NAMES = [CHANNELS_64[i] for i in VALID_CHANNEL_INDICES]
 REVE_SFREQ = 200  # REVE requires 200 Hz
 
 
-def bandpass_filter(data, sfreq, l_freq=1.0, h_freq=90.0):
-    """Apply bandpass filter to EEG data. data: (channels, timepoints)."""
+def bandpass_filter(data, sfreq, l_freq=3.0, h_freq=90.0):
+    """Apply 3-90Hz bandpass + 50Hz notch filter to EEG data. data: (channels, timepoints)."""
     import warnings
     info = mne.create_info(ch_names=data.shape[0], sfreq=sfreq, ch_types="eeg")
     raw = mne.io.RawArray(data, info, verbose=False)
-    # Use 'auto' filter length to handle short signals gracefully
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         raw.filter(l_freq, h_freq, verbose=False, filter_length='auto', phase='zero-double')
+        raw.notch_filter(50.0, verbose=False)
     return raw.get_data()
 
 
@@ -133,7 +133,7 @@ def preprocess_trial(trial_data, orig_sfreq=250):
     # Adjust filter length for short signals (BETA has 750 samples)
     if n_samples < 825:
         # Use shorter filter for BETA data
-        filtered = bandpass_filter(trial_data, orig_sfreq, l_freq=1.0, h_freq=90.0)
+        filtered = bandpass_filter(trial_data, orig_sfreq, l_freq=3.0, h_freq=90.0)
     else:
         filtered = bandpass_filter(trial_data, orig_sfreq)
 
