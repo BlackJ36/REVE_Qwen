@@ -73,11 +73,12 @@ def load_benchmark(data_dir, sfreq=250):
         data = mat["data"]  # (64, 1500, 40, 6)
 
         n_channels, n_times, n_targets, n_blocks = data.shape
+        # Skip 0.5s visual cue (125 samples at 250Hz)
+        cue_samples = int(0.5 * sfreq)
         for block in range(n_blocks):
             for target in range(n_targets):
-                trial = data[:, :, target, block]  # (64, 1500)
-                # Remove excluded channels (CB1, CB2)
-                trial = trial[VALID_CHANNEL_INDICES, :]  # (62, 1500)
+                trial = data[:, cue_samples:, target, block]  # (64, 1375)
+                trial = trial[VALID_CHANNEL_INDICES, :]  # (62, 1375)
                 samples.append((subj_idx, trial, target))
 
     print(f"Benchmark: loaded {len(samples)} trials from {data_dir}")
@@ -108,44 +109,37 @@ def load_beta(data_dir, sfreq=250):
         eeg = data_struct["EEG"][0, 0]  # (64, 750, blocks, targets)
 
         n_channels, n_times, n_blocks, n_targets = eeg.shape
+        # Skip 0.5s visual cue (125 samples at 250Hz)
+        cue_samples = int(0.5 * sfreq)
         for block in range(n_blocks):
             for target in range(n_targets):
-                trial = eeg[:, :, block, target]  # (64, 750)
-                # Remove excluded channels (CB1, CB2)
-                trial = trial[VALID_CHANNEL_INDICES, :]  # (62, 750)
+                trial = eeg[:, cue_samples:, block, target]  # (64, 625)
+                trial = trial[VALID_CHANNEL_INDICES, :]  # (62, 625)
                 samples.append((subj_idx, trial, target))
 
     print(f"BETA: loaded {len(samples)} trials from {data_dir}")
     return samples
 
 
-TARGET_LENGTH = 600  # Unify to 3 seconds at 200Hz (shortest is BETA with 750 @ 250Hz = 3s)
+TARGET_LENGTH = 600  # 3 seconds at 200Hz
 
 
 def preprocess_trial(trial_data, orig_sfreq=250):
     """Filter and resample a single trial. Output: (62, TARGET_LENGTH) at 200Hz.
 
-    Benchmark: 1500 @ 250Hz (6s) -> filter -> resample to 1200 @ 200Hz -> truncate to 600
-    BETA: 750 @ 250Hz (3s) -> filter -> resample to 600 @ 200Hz
+    Input already has visual cue period removed:
+      Benchmark: 1375 @ 250Hz (5.5s stimulus) -> filter -> resample -> 1100 -> first 600
+      BETA: 625 @ 250Hz (2s stimulus + 0.5s rest) -> filter -> resample -> 500 -> pad to 600
     """
-    n_samples = trial_data.shape[1]
-
-    # Adjust filter length for short signals (BETA has 750 samples)
-    if n_samples < 825:
-        # Use shorter filter for BETA data
-        filtered = bandpass_filter(trial_data, orig_sfreq, l_freq=3.0, h_freq=90.0)
-    else:
-        filtered = bandpass_filter(trial_data, orig_sfreq)
-
+    filtered = bandpass_filter(trial_data, orig_sfreq)
     resampled = resample_data(filtered, orig_sfreq, REVE_SFREQ)
 
     # Truncate or pad to TARGET_LENGTH
     if resampled.shape[1] > TARGET_LENGTH:
-        # Truncate (use the middle portion for Benchmark data)
-        start = (resampled.shape[1] - TARGET_LENGTH) // 2
-        resampled = resampled[:, start:start + TARGET_LENGTH]
+        # Take the first 600 samples (cue already removed, starts at stimulus onset)
+        resampled = resampled[:, :TARGET_LENGTH]
     elif resampled.shape[1] < TARGET_LENGTH:
-        # Pad with zeros (shouldn't happen with current data)
+        # BETA: 500 pts of real data, pad to 600
         pad_width = TARGET_LENGTH - resampled.shape[1]
         resampled = np.pad(resampled, ((0, 0), (0, pad_width)), mode='constant')
 

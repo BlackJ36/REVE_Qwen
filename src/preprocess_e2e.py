@@ -42,10 +42,12 @@ def load_benchmark_with_blocks(data_dir, sfreq=250):
         data = mat["data"]  # (64, 1500, 40, 6)
 
         n_channels, n_times, n_targets, n_blocks = data.shape
+        # Skip 0.5s visual cue (125 samples at 250Hz)
+        cue_samples = int(0.5 * sfreq)
         for block in range(n_blocks):
             for target in range(n_targets):
-                trial = data[:, :, target, block]  # (64, 1500)
-                trial = trial[VALID_CHANNEL_INDICES, :]  # (62, 1500)
+                trial = data[:, cue_samples:, target, block]  # (64, 1375)
+                trial = trial[VALID_CHANNEL_INDICES, :]  # (62, 1375)
                 samples.append((subj_idx, block, trial, target))
 
     print(f"Benchmark: loaded {len(samples)} trials from {data_dir}")
@@ -71,10 +73,12 @@ def load_beta_with_blocks(data_dir, sfreq=250):
         eeg = data_struct["EEG"][0, 0]  # (64, 750, blocks, targets)
 
         n_channels, n_times, n_blocks, n_targets = eeg.shape
+        # Skip 0.5s visual cue (125 samples at 250Hz)
+        cue_samples = int(0.5 * sfreq)
         for block in range(n_blocks):
             for target in range(n_targets):
-                trial = eeg[:, :, block, target]  # (64, 750)
-                trial = trial[VALID_CHANNEL_INDICES, :]  # (62, 750)
+                trial = eeg[:, cue_samples:, block, target]  # (64, 625)
+                trial = trial[VALID_CHANNEL_INDICES, :]  # (62, 625)
                 samples.append((subj_idx, block, trial, target))
 
     print(f"BETA: loaded {len(samples)} trials from {data_dir}")

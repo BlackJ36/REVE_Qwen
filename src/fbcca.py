@@ -160,7 +160,11 @@ class FBCCAFeatureExtractor(nn.Module):
                          self.R_yy_inv_sqrt, kernel, self.R_yy_inv_sqrt)
 
         # ρ² = max eigenvalue of K (6×6 matrix per freq)
+        # Symmetrize K to handle numerical asymmetry from zero-padded trials
+        K = (K + K.transpose(-1, -2)) / 2
         K_flat = K.reshape(B * F, H, H)
+        # Add small regularization for ill-conditioned matrices (e.g. zero-padded BETA)
+        K_flat = K_flat + 1e-6 * torch.eye(H, device=K_flat.device).unsqueeze(0)
         CHUNK = 8192
         parts = []
         for i in range(0, B * F, CHUNK):
