@@ -23,14 +23,16 @@ class BCIAgentModel(nn.Module):
         encoder: FiLMHybridEncoder instance
         qwen_model: Qwen3 causal LM (frozen or LoRA-wrapped)
         tokenizer: tokenizer with BCI special tokens registered
+        original_vocab_size: vocab size before adding BCI tokens (for partial save)
     """
 
-    def __init__(self, encoder, qwen_model, tokenizer):
+    def __init__(self, encoder, qwen_model, tokenizer, original_vocab_size=None):
         super().__init__()
         self.encoder = encoder
         self.qwen = qwen_model
         self.tokenizer = tokenizer
         self.bci_pad_id = tokenizer.convert_tokens_to_ids(BCI_PAD)
+        self.original_vocab_size = original_vocab_size
 
     def get_input_embeddings(self):
         return self.qwen.get_input_embeddings()
@@ -111,14 +113,16 @@ class BCIAgentModel(nn.Module):
             # Stage 2: save LoRA adapter + modules_to_save (embed_tokens/lm_head)
             self.qwen.save_pretrained(str(save_dir), **kwargs)
         else:
-            # Stage 1: only save trainable Qwen params (embed_tokens, maybe lm_head)
-            # Avoids saving full ~8-16GB frozen model
-            qwen_trainable = {
-                name: param.data
-                for name, param in self.qwen.named_parameters()
-                if param.requires_grad
-            }
-            torch.save(qwen_trainable, save_dir / "qwen_trainable.pt")
+            # Stage 1: only save NEW token embedding rows (not full 389M matrix)
+            new_token_state = {}
+            ovs = self.original_vocab_size
+            if ovs is not None:
+                embed_w = self.qwen.get_input_embeddings().weight
+                new_token_state["embed_tokens.new_rows"] = embed_w.data[ovs:]
+                if not getattr(self.qwen.config, "tie_word_embeddings", True):
+                    lm_w = self.qwen.lm_head.weight
+                    new_token_state["lm_head.new_rows"] = lm_w.data[ovs:]
+            torch.save(new_token_state, save_dir / "qwen_trainable.pt")
 
         # Save tokenizer
         self.tokenizer.save_pretrained(str(save_dir))
@@ -191,19 +195,29 @@ def build_bci_agent_model(
     print(f"Qwen hidden dim: {llm_dim}")
 
     # --- Freeze strategy ---
+    original_vocab_size = len(tokenizer) - num_new  # vocab size before adding BCI tokens
+
     if stage == 1:
         # Freeze all Qwen params
         qwen_model.requires_grad_(False)
-        # Unfreeze embed_tokens (+ lm_head if tied) so new token embeddings can train
-        qwen_model.get_input_embeddings().weight.requires_grad_(True)
-        # If lm_head is separate (not tied), unfreeze it too
-        if not getattr(qwen_model.config, "tie_word_embeddings", True):
-            qwen_model.lm_head.weight.requires_grad_(True)
+        # Unfreeze embed_tokens so new token rows can train
+        embed_weight = qwen_model.get_input_embeddings().weight
+        embed_weight.requires_grad_(True)
+        # Gradient hook: zero out gradients for original vocab rows
+        # Only the num_new new token rows (at the end) receive updates
+        def _mask_original_grad(grad):
+            grad[:original_vocab_size] = 0
+            return grad
+        embed_weight.register_hook(_mask_original_grad)
 
-        embed_trainable = sum(
-            p.numel() for p in qwen_model.parameters() if p.requires_grad
-        )
-        print(f"Stage 1: Qwen frozen except embeddings ({embed_trainable:,} trainable)")
+        # If lm_head is separate (not tied), do the same
+        if not getattr(qwen_model.config, "tie_word_embeddings", True):
+            lm_weight = qwen_model.lm_head.weight
+            lm_weight.requires_grad_(True)
+            lm_weight.register_hook(_mask_original_grad)
+
+        new_token_params = num_new * llm_dim
+        print(f"Stage 1: Qwen frozen, only {num_new} new token embeddings trainable ({new_token_params:,} params)")
 
     elif stage == 2:
         # Apply LoRA
@@ -251,25 +265,34 @@ def build_bci_agent_model(
         else:
             print(f"WARNING: {enc_path} not found, training encoder from scratch")
 
-        # Load trained embed_tokens / lm_head from Stage 1
+        # Load trained new-token embedding rows from Stage 1
         qwen_path = s1_dir / "qwen_trainable.pt"
         if qwen_path.exists():
             print(f"Loading Stage 1 embeddings from {qwen_path}")
             qwen_state = torch.load(qwen_path, map_location="cpu", weights_only=True)
-            missing, unexpected = qwen_model.load_state_dict(qwen_state, strict=False)
-            loaded = len(qwen_state) - len(unexpected)
-            print(f"  Loaded {loaded} embedding tensors")
+            ovs = original_vocab_size
+            if "embed_tokens.new_rows" in qwen_state:
+                new_rows = qwen_state["embed_tokens.new_rows"]
+                qwen_model.get_input_embeddings().weight.data[ovs:] = new_rows
+                print(f"  Restored {new_rows.shape[0]} new token embeddings")
+            if "lm_head.new_rows" in qwen_state:
+                qwen_model.lm_head.weight.data[ovs:] = qwen_state["lm_head.new_rows"]
+                print(f"  Restored lm_head new token rows")
         else:
             print(f"WARNING: {qwen_path} not found, special token embeddings untrained")
 
     # --- Assemble ---
-    model = BCIAgentModel(encoder, qwen_model, tokenizer)
+    model = BCIAgentModel(encoder, qwen_model, tokenizer, original_vocab_size)
     model.gradient_checkpointing_enable()
 
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    # For Stage 1, effective trainable is much less (gradient hook masks original tokens)
+    effective_trainable = trainable
+    if stage == 1:
+        effective_trainable = trainable - original_vocab_size * llm_dim + num_new * llm_dim
     print(f"\nBCIAgentModel (Stage {stage}):")
     print(f"  Total params:     {total:,}")
-    print(f"  Trainable params: {trainable:,}")
+    print(f"  Trainable params: {trainable:,} (effective: {effective_trainable:,})")
 
     return model, tokenizer
