@@ -132,11 +132,11 @@ def run_stage1_training(
     encoder_type="reve",
     use_fbcca=True,
     # Training
-    per_device_batch_size=64,
-    gradient_accumulation_steps=2,
+    per_device_batch_size=16,
+    gradient_accumulation_steps=1,
     learning_rate=5e-4,
     encoder_lr=1e-3,
-    num_epochs=10,
+    num_epochs=30,
     warmup_ratio=0.1,
     # Multi-spell
     min_spells=5,
@@ -262,11 +262,11 @@ def run_stage2_training(
     lora_alpha=64,
     lora_dropout=0.05,
     # Training
-    per_device_batch_size=32,
-    gradient_accumulation_steps=4,
+    per_device_batch_size=8,
+    gradient_accumulation_steps=2,
     learning_rate=2e-5,
     encoder_lr=5e-4,
-    num_epochs=5,
+    num_epochs=15,
     warmup_ratio=0.1,
     # Data
     nl_data_path=None,

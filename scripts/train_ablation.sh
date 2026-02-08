@@ -8,14 +8,59 @@
 #
 # experiment: reve_fbcca | reve_only | labram_fbcca | labram_only | all (default)
 #
-# Estimated time (6x 48GB GPUs):
-#   Stage 1: ~40-60 min total (4 experiments)
-#   Stage 2: ~40-60 min total (4 experiments)
-#   Full:    ~1.5-2 hours
+# GPU selection:
+#   CUDA_VISIBLE_DEVICES=2,3 bash scripts/train_ablation.sh s1 reve_fbcca
+#   NUM_GPUS=4 bash scripts/train_ablation.sh all
 
 set -e
 
-NUM_GPUS=6
+# --- GPU detection ---
+NUM_GPUS=${NUM_GPUS:-}
+if [ -z "$NUM_GPUS" ]; then
+    if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+        NUM_GPUS=$(echo "$CUDA_VISIBLE_DEVICES" | awk -F',' '{print NF}')
+    else
+        NUM_GPUS=6
+    fi
+fi
+
+DEEPSPEED_ARGS=()
+if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
+    DEEPSPEED_ARGS=(--num_gpus "$NUM_GPUS")
+fi
+
+# --- Batch size / accumulation ---
+# Target effective global batch = 32 (balanced for ~2100 sequences)
+# Formula: global_batch = micro_bs × grad_accum × num_gpus
+TARGET_BATCH=${TARGET_BATCH:-32}
+
+auto_accum() {
+    local micro_bs=$1
+    local denom=$((micro_bs * NUM_GPUS))
+    local accum=$((TARGET_BATCH / denom))
+    [ "$accum" -lt 1 ] && accum=1
+    echo "$accum"
+}
+
+# Stage 1: micro_bs=16 (safe for most GPUs)
+S1_BS=${S1_BS:-16}
+S1_ACCUM=$(auto_accum $S1_BS)
+S1_EPOCHS=${S1_EPOCHS:-30}
+
+# Stage 2: micro_bs=8 (LoRA uses more memory)
+S2_BS=${S2_BS:-8}
+S2_ACCUM=$(auto_accum $S2_BS)
+S2_EPOCHS=${S2_EPOCHS:-15}
+
+# --- Print config ---
+echo "=== Ablation Config ==="
+echo "GPUs:        ${NUM_GPUS}"
+echo "Target batch: ${TARGET_BATCH}"
+echo "Stage 1:     bs=${S1_BS} × accum=${S1_ACCUM} × ${NUM_GPUS}gpu = $((S1_BS * S1_ACCUM * NUM_GPUS)) eff, ${S1_EPOCHS} epochs"
+echo "Stage 2:     bs=${S2_BS} × accum=${S2_ACCUM} × ${NUM_GPUS}gpu = $((S2_BS * S2_ACCUM * NUM_GPUS)) eff, ${S2_EPOCHS} epochs"
+echo "========================"
+echo ""
+
 STAGE=${1:-all}
 EXPERIMENT=${2:-all}
 
@@ -35,7 +80,7 @@ run_stage1() {
     echo "Output: ${output_dir}"
     echo "============================================================"
 
-    deepspeed --num_gpus $NUM_GPUS main_bci_agent.py \
+    deepspeed "${DEEPSPEED_ARGS[@]}" main_bci_agent.py \
         --stage 1 \
         --eeg_dir data/eeg_tensors \
         --output_dir "$output_dir" \
@@ -44,11 +89,11 @@ run_stage1() {
         --encoder_type "$encoder_type" \
         $fbcca_flag \
         --exclude_bad_subjects \
-        --batch_size 64 \
-        --grad_accum 2 \
+        --batch_size "$S1_BS" \
+        --grad_accum "$S1_ACCUM" \
         --lr 5e-4 \
         --encoder_lr 1e-3 \
-        --epochs 10 \
+        --epochs "$S1_EPOCHS" \
         --warmup_ratio 0.1 \
         --min_spells 5 \
         --max_spells 10 \
@@ -75,7 +120,7 @@ run_stage2() {
     echo "Output: ${output_dir}"
     echo "============================================================"
 
-    deepspeed --num_gpus $NUM_GPUS main_bci_agent.py \
+    deepspeed "${DEEPSPEED_ARGS[@]}" main_bci_agent.py \
         --stage 2 \
         --eeg_dir data/eeg_tensors \
         --output_dir "$output_dir" \
@@ -87,11 +132,11 @@ run_stage2() {
         --stage1_checkpoint "$s1_ckpt" \
         --lora_rank 32 \
         --lora_alpha 64 \
-        --batch_size 32 \
-        --grad_accum 4 \
+        --batch_size "$S2_BS" \
+        --grad_accum "$S2_ACCUM" \
         --lr 2e-5 \
         --encoder_lr 5e-4 \
-        --epochs 5 \
+        --epochs "$S2_EPOCHS" \
         --warmup_ratio 0.1 \
         --min_spells 3 \
         --max_spells 8 \
