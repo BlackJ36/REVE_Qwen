@@ -131,6 +131,8 @@ def build_bci_agent_model(
     lora_dropout=0.05,
     lora_target_modules=("q_proj", "v_proj"),
     # Encoder config
+    encoder_type="reve",
+    use_fbcca=True,
     window_size=300,
     sfreq=200.0,
     encoder_dropout=0.1,
@@ -202,7 +204,7 @@ def build_bci_agent_model(
     else:
         raise ValueError(f"Invalid stage: {stage}, must be 1 or 2")
 
-    # --- Build FiLM encoder ---
+    # --- Build encoder (backbone + optional FBCCA FiLM) ---
     from .encoder_film import build_film_encoder
 
     encoder = build_film_encoder(
@@ -211,6 +213,8 @@ def build_bci_agent_model(
         window_size=window_size,
         sfreq=sfreq,
         dropout=encoder_dropout,
+        encoder_type=encoder_type,
+        use_fbcca=use_fbcca,
     )
 
     # --- Load Stage 1 encoder weights for Stage 2 ---

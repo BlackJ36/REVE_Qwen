@@ -21,6 +21,14 @@ def parse_args():
     parser.add_argument("--no_modelscope", dest="from_modelscope", action="store_false")
     parser.add_argument("--reve_dir", type=str, default="models")
 
+    # Encoder backbone
+    parser.add_argument("--encoder_type", type=str, default="reve", choices=["reve", "labram"],
+                        help="EEG encoder backbone: 'reve' (512d) or 'labram' (200d)")
+    parser.add_argument("--use_fbcca", action="store_true", default=True,
+                        help="Enable FBCCA FiLM modulation (default: True)")
+    parser.add_argument("--no_fbcca", dest="use_fbcca", action="store_false",
+                        help="Disable FBCCA, use backbone-only")
+
     # Stage 2 specific
     parser.add_argument("--stage1_checkpoint", type=str, default=None,
                         help="Path to Stage 1 best checkpoint directory")
@@ -81,6 +89,8 @@ def main():
             model_name=args.model_name,
             from_modelscope=args.from_modelscope,
             reve_dir=args.reve_dir,
+            encoder_type=args.encoder_type,
+            use_fbcca=args.use_fbcca,
             per_device_batch_size=batch_size,
             gradient_accumulation_steps=grad_accum,
             learning_rate=lr,
@@ -112,6 +122,8 @@ def main():
             model_name=args.model_name,
             from_modelscope=args.from_modelscope,
             reve_dir=args.reve_dir,
+            encoder_type=args.encoder_type,
+            use_fbcca=args.use_fbcca,
             stage1_checkpoint=args.stage1_checkpoint,
             lora_rank=args.lora_rank,
             lora_alpha=args.lora_alpha,

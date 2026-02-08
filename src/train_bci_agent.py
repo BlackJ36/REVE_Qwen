@@ -119,6 +119,8 @@ def run_stage1_training(
     model_name="Qwen/Qwen3-4B-Instruct",
     from_modelscope=True,
     reve_dir="models",
+    encoder_type="reve",
+    use_fbcca=True,
     # Training
     per_device_batch_size=64,
     gradient_accumulation_steps=2,
@@ -144,12 +146,14 @@ def run_stage1_training(
     print("Stage 1: Alignment Training")
     print("=" * 60)
 
-    print("\nBuilding model (Stage 1)...")
+    print(f"\nBuilding model (Stage 1, encoder={encoder_type}, fbcca={use_fbcca})...")
     model, tokenizer = build_bci_agent_model(
         model_name=model_name,
         from_modelscope=from_modelscope,
         reve_dir=reve_dir,
         stage=1,
+        encoder_type=encoder_type,
+        use_fbcca=use_fbcca,
         window_size=window_size,
     )
 
@@ -229,6 +233,8 @@ def run_stage2_training(
     model_name="Qwen/Qwen3-4B-Instruct",
     from_modelscope=True,
     reve_dir="models",
+    encoder_type="reve",
+    use_fbcca=True,
     # Stage 1 checkpoint
     stage1_checkpoint=None,
     # LoRA
@@ -265,12 +271,14 @@ def run_stage2_training(
     if stage1_checkpoint is None:
         print("WARNING: No Stage 1 checkpoint specified. Training encoder from scratch.")
 
-    print("\nBuilding model (Stage 2)...")
+    print(f"\nBuilding model (Stage 2, encoder={encoder_type}, fbcca={use_fbcca})...")
     model, tokenizer = build_bci_agent_model(
         model_name=model_name,
         from_modelscope=from_modelscope,
         reve_dir=reve_dir,
         stage=2,
+        encoder_type=encoder_type,
+        use_fbcca=use_fbcca,
         stage1_checkpoint=stage1_checkpoint,
         lora_rank=lora_rank,
         lora_alpha=lora_alpha,
