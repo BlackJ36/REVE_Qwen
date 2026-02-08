@@ -51,6 +51,10 @@ def parse_args():
                         help="Number of epochs (default: 10 for S1, 5 for S2)")
     parser.add_argument("--warmup_ratio", type=float, default=0.1)
 
+    # Data quality
+    parser.add_argument("--exclude_bad_subjects", action="store_true", default=False,
+                        help="Exclude BETA subjects with <30%% FBCCA accuracy (S11,S41,S55,S59,S64)")
+
     # Multi-spell
     parser.add_argument("--min_spells", type=int, default=None)
     parser.add_argument("--max_spells", type=int, default=None)
@@ -67,6 +71,13 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    # Resolve exclude list
+    if args.exclude_bad_subjects:
+        from src.dataset_bci_agent import BETA_BAD_SUBJECTS
+        exclude_subjects = BETA_BAD_SUBJECTS
+    else:
+        exclude_subjects = None
 
     # Set stage-specific defaults
     if args.output_dir is None:
@@ -102,6 +113,7 @@ def main():
             window_size=args.window_size,
             window_step=args.window_step,
             num_eeg_tokens=args.num_eeg_tokens,
+            exclude_subjects=exclude_subjects,
             deepspeed_config=args.deepspeed,
         )
 
@@ -140,6 +152,7 @@ def main():
             window_size=args.window_size,
             window_step=args.window_step,
             num_eeg_tokens=args.num_eeg_tokens,
+            exclude_subjects=exclude_subjects,
             deepspeed_config=args.deepspeed,
         )
 

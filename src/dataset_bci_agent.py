@@ -23,6 +23,29 @@ from .templates_zh import (
 )
 from .tokens import BCI_PAD, BCI_TRANS, TARGET_INDEX_TO_TOKEN
 
+# BETA subjects with <30% FBCCA accuracy — near-random SSVEP signal.
+# Note: subject_id overlaps between Benchmark and BETA (both start from 1).
+# S11 exists in both datasets; excluding it also removes good BM S11 (~240 trials).
+# S41/S55/S59 are BETA-only (ID > 35). S64 is in BETA val set.
+BETA_BAD_SUBJECTS = {11, 41, 55, 59, 64}
+
+
+def _filter_by_subjects(data, exclude_subjects):
+    """Filter .pt data dict, removing trials from excluded subjects.
+
+    Returns filtered (eeg_data, labels, subject_ids, block_ids) and count removed.
+    """
+    mask = torch.ones(len(data["labels"]), dtype=torch.bool)
+    for sid in exclude_subjects:
+        mask &= data["subject_ids"] != sid
+    n_removed = int((~mask).sum())
+    return {
+        "eeg_data": data["eeg_data"][mask],
+        "labels": data["labels"][mask],
+        "subject_ids": data["subject_ids"][mask],
+        "block_ids": data["block_ids"][mask],
+    }, n_removed
+
 
 class BCIAgentStage1Dataset(Dataset):
     """Stage 1: multi-spell EEG -> target classification with chat template.
@@ -52,6 +75,7 @@ class BCIAgentStage1Dataset(Dataset):
         max_spells=10,
         window_size=300,
         window_step=100,
+        exclude_subjects=None,
     ):
         self.eeg_dir = Path(eeg_dir)
         self.tokenizer = tokenizer
@@ -62,6 +86,9 @@ class BCIAgentStage1Dataset(Dataset):
         self.window_step = window_step
 
         data = torch.load(self.eeg_dir / f"{split}_eeg.pt", weights_only=True)
+        if exclude_subjects:
+            data, n_removed = _filter_by_subjects(data, exclude_subjects)
+            print(f"[{split}] Excluded subjects {exclude_subjects}: removed {n_removed} trials")
         self.eeg_data = data["eeg_data"]       # (N, 62, 600)
         self.labels = data["labels"]           # (N,)
         self.subject_ids = data["subject_ids"] # (N,)
@@ -206,6 +233,7 @@ class BCIAgentStage2Dataset(Dataset):
         max_spells=8,
         window_size=300,
         window_step=100,
+        exclude_subjects=None,
     ):
         self.eeg_dir = Path(eeg_dir)
         self.tokenizer = tokenizer
@@ -223,6 +251,9 @@ class BCIAgentStage2Dataset(Dataset):
 
         # Load EEG data
         data = torch.load(self.eeg_dir / f"{split}_eeg.pt", weights_only=True)
+        if exclude_subjects:
+            data, n_removed = _filter_by_subjects(data, exclude_subjects)
+            print(f"[{split}] Excluded subjects {exclude_subjects}: removed {n_removed} trials")
         self.eeg_data = data["eeg_data"]
         self.labels = data["labels"]
         self.subject_ids = data["subject_ids"]

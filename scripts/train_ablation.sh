@@ -43,6 +43,7 @@ run_stage1() {
         --reve_dir models \
         --encoder_type "$encoder_type" \
         $fbcca_flag \
+        --exclude_bad_subjects \
         --batch_size 64 \
         --grad_accum 2 \
         --lr 5e-4 \
@@ -82,6 +83,7 @@ run_stage2() {
         --reve_dir models \
         --encoder_type "$encoder_type" \
         $fbcca_flag \
+        --exclude_bad_subjects \
         --stage1_checkpoint "$s1_ckpt" \
         --lora_rank 32 \
         --lora_alpha 64 \

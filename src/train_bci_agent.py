@@ -134,6 +134,8 @@ def run_stage1_training(
     window_size=300,
     window_step=100,
     num_eeg_tokens=62,
+    # Data quality
+    exclude_subjects=None,
     # DeepSpeed
     deepspeed_config="configs/ds_zero2.json",
 ):
@@ -163,12 +165,14 @@ def run_stage1_training(
         num_eeg_tokens=num_eeg_tokens,
         min_spells=min_spells, max_spells=max_spells,
         window_size=window_size, window_step=window_step,
+        exclude_subjects=exclude_subjects,
     )
     val_dataset = BCIAgentStage1Dataset(
         eeg_dir, tokenizer, split="val",
         num_eeg_tokens=num_eeg_tokens,
         min_spells=min_spells, max_spells=max_spells,
         window_size=window_size, window_step=window_step,
+        exclude_subjects=exclude_subjects,
     )
     collator = BCIAgentCollator(tokenizer)
 
@@ -257,6 +261,8 @@ def run_stage2_training(
     window_size=300,
     window_step=100,
     num_eeg_tokens=62,
+    # Data quality
+    exclude_subjects=None,
     # DeepSpeed
     deepspeed_config="configs/ds_zero2.json",
 ):
@@ -294,6 +300,7 @@ def run_stage2_training(
         num_eeg_tokens=num_eeg_tokens,
         min_spells=min_spells, max_spells=max_spells,
         window_size=window_size, window_step=window_step,
+        exclude_subjects=exclude_subjects,
     )
     val_dataset = BCIAgentStage2Dataset(
         eeg_dir, tokenizer, split="val",
@@ -302,6 +309,7 @@ def run_stage2_training(
         num_eeg_tokens=num_eeg_tokens,
         min_spells=min_spells, max_spells=max_spells,
         window_size=window_size, window_step=window_step,
+        exclude_subjects=exclude_subjects,
     )
     collator = BCIAgentCollator(tokenizer)
 
