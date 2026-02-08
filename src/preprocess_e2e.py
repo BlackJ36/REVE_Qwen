@@ -16,6 +16,7 @@ from scipy.io import loadmat
 from tqdm import tqdm
 
 from .preprocess import (
+    BETA_LABEL_REMAP,
     VALID_CHANNEL_INDICES,
     VALID_CHANNEL_NAMES,
     preprocess_trial,
@@ -57,6 +58,9 @@ def load_benchmark_with_blocks(data_dir, sfreq=250):
 def load_beta_with_blocks(data_dir, sfreq=250):
     """Load BETA dataset with block metadata.
 
+    Recording length varies: S01-S19 have 750pts (3s), S20-S70 have 1000pts (4s).
+    Labels are remapped from BETA ordering to Benchmark canonical ordering.
+
     Returns list of (subject_id, block_id, eeg_data, label) tuples.
     """
     data_dir = Path(data_dir)
@@ -70,16 +74,17 @@ def load_beta_with_blocks(data_dir, sfreq=250):
 
         mat = loadmat(str(mat_file))
         data_struct = mat["data"]
-        eeg = data_struct["EEG"][0, 0]  # (64, 750, blocks, targets)
+        eeg = data_struct["EEG"][0, 0]  # (64, T, blocks, targets)
 
         n_channels, n_times, n_blocks, n_targets = eeg.shape
         # Skip 0.5s visual cue (125 samples at 250Hz)
         cue_samples = int(0.5 * sfreq)
         for block in range(n_blocks):
             for target in range(n_targets):
-                trial = eeg[:, cue_samples:, block, target]  # (64, 625)
-                trial = trial[VALID_CHANNEL_INDICES, :]  # (62, 625)
-                samples.append((subj_idx, block, trial, target))
+                trial = eeg[:, cue_samples:, block, target]
+                trial = trial[VALID_CHANNEL_INDICES, :]
+                canonical_label = BETA_LABEL_REMAP[target]
+                samples.append((subj_idx, block, trial, canonical_label))
 
     print(f"BETA: loaded {len(samples)} trials from {data_dir}")
     return samples

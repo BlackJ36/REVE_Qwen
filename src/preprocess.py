@@ -31,6 +31,17 @@ VALID_CHANNEL_NAMES = [CHANNELS_64[i] for i in VALID_CHANNEL_INDICES]
 
 REVE_SFREQ = 200  # REVE requires 200 Hz
 
+# BETA uses different target-to-frequency mapping than Benchmark.
+# Benchmark: 5×8 grid row-major, label i → freq = 8.0 + (i%8)*1.0 + (i//8)*0.2
+# BETA: [8.6, 8.8, 9.0, ..., 15.8, 8.0, 8.2, 8.4] (linear from 8.6, wraps around)
+# We remap BETA targets to Benchmark's canonical label ordering.
+_BETA_FREQS = [8.6, 8.8, 9.0, 9.2, 9.4, 9.6, 9.8, 10.0, 10.2, 10.4, 10.6, 10.8,
+               11.0, 11.2, 11.4, 11.6, 11.8, 12.0, 12.2, 12.4, 12.6, 12.8, 13.0,
+               13.2, 13.4, 13.6, 13.8, 14.0, 14.2, 14.4, 14.6, 14.8, 15.0, 15.2,
+               15.4, 15.6, 15.8, 8.0, 8.2, 8.4]
+_BM_FREQ_TO_LABEL = {round(8.0 + (i % 8) * 1.0 + (i // 8) * 0.2, 1): i for i in range(40)}
+BETA_LABEL_REMAP = [_BM_FREQ_TO_LABEL[round(f, 1)] for f in _BETA_FREQS]
+
 
 def bandpass_filter(data, sfreq, l_freq=3.0, h_freq=90.0):
     """Apply 3-90Hz bandpass + 50Hz notch filter to EEG data. data: (channels, timepoints)."""
@@ -89,8 +100,10 @@ def load_beta(data_dir, sfreq=250):
     """Load BETA dataset.
 
     Expected structure: data_dir/S{01-70}.mat
-    Each .mat has nested structure: data['EEG'] with shape (64, 750, 4, 40).
-    Note: BETA uses (channels, timepoints, blocks, targets) order.
+    Each .mat has nested structure: data['EEG'].
+    Recording length varies: S01-S19 have 750pts (3s), S20-S70 have 1000pts (4s).
+    BETA uses different target-to-frequency mapping — labels are remapped to
+    Benchmark's canonical ordering via BETA_LABEL_REMAP.
 
     Returns list of (subject_id, eeg_data, label) tuples.
     """
@@ -104,18 +117,18 @@ def load_beta(data_dir, sfreq=250):
             continue
 
         mat = loadmat(str(mat_file))
-        # BETA has nested structure: data['EEG'][0,0] -> (64, 750, 4, 40)
         data_struct = mat["data"]
-        eeg = data_struct["EEG"][0, 0]  # (64, 750, blocks, targets)
+        eeg = data_struct["EEG"][0, 0]  # (64, T, blocks, targets)
 
         n_channels, n_times, n_blocks, n_targets = eeg.shape
         # Skip 0.5s visual cue (125 samples at 250Hz)
         cue_samples = int(0.5 * sfreq)
         for block in range(n_blocks):
             for target in range(n_targets):
-                trial = eeg[:, cue_samples:, block, target]  # (64, 625)
-                trial = trial[VALID_CHANNEL_INDICES, :]  # (62, 625)
-                samples.append((subj_idx, trial, target))
+                trial = eeg[:, cue_samples:, block, target]
+                trial = trial[VALID_CHANNEL_INDICES, :]
+                canonical_label = BETA_LABEL_REMAP[target]
+                samples.append((subj_idx, trial, canonical_label))
 
     print(f"BETA: loaded {len(samples)} trials from {data_dir}")
     return samples
