@@ -15,7 +15,9 @@ from .dataset_bci_agent import (
     BCIAgentStage1Dataset,
     BCIAgentStage2Dataset,
 )
+from .metrics_bci_agent import build_metrics_fn
 from .model_bci_agent import build_bci_agent_model
+from .tokens import get_target_token_ids
 
 
 class BCIAgentTrainer(Trainer):
@@ -52,11 +54,11 @@ class BCIAgentTrainer(Trainer):
 
         groups = []
         if encoder_params:
-            groups.append({"params": encoder_params, "lr": self.encoder_lr})
+            groups.append({"params": encoder_params, "lr": self.encoder_lr, "name": "encoder"})
         if embed_params:
-            groups.append({"params": embed_params, "lr": self.args.learning_rate})
+            groups.append({"params": embed_params, "lr": self.args.learning_rate, "name": "embed"})
         if lora_params:
-            groups.append({"params": lora_params, "lr": self.args.learning_rate})
+            groups.append({"params": lora_params, "lr": self.args.learning_rate, "name": "lora"})
 
         from torch.optim import AdamW
         self.optimizer = AdamW(
@@ -102,6 +104,14 @@ class BCIAgentTrainer(Trainer):
                         print(f"  New best: {current_loss:.4f}, saving to {self.best_model_dir}")
                         self._save_weights(self.best_model_dir)
                     break
+
+    def log(self, logs):
+        """Append per-group learning rates to TensorBoard logs."""
+        if self.optimizer is not None:
+            for group in self.optimizer.param_groups:
+                name = group.get("name", "unknown")
+                logs[f"lr_{name}"] = group["lr"]
+        super().log(logs)
 
     def _save(self, output_dir=None, state_dict=None):
         output_dir = output_dir if output_dir is not None else self.args.output_dir
@@ -202,12 +212,18 @@ def run_stage1_training(
     best_dir = Path(output_dir) / "best"
     best_dir.mkdir(parents=True, exist_ok=True)
 
+    # Build evaluation metrics
+    target_ids = get_target_token_ids(tokenizer)
+    compute_metrics, preprocess_logits = build_metrics_fn(target_ids)
+
     trainer = BCIAgentTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         data_collator=collator,
+        compute_metrics=compute_metrics,
+        preprocess_logits_for_metrics=preprocess_logits,
         encoder_lr=encoder_lr,
         best_model_dir=str(best_dir),
     )
@@ -339,12 +355,18 @@ def run_stage2_training(
     best_dir = Path(output_dir) / "best"
     best_dir.mkdir(parents=True, exist_ok=True)
 
+    # Build evaluation metrics
+    target_ids = get_target_token_ids(tokenizer)
+    compute_metrics, preprocess_logits = build_metrics_fn(target_ids)
+
     trainer = BCIAgentTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         data_collator=collator,
+        compute_metrics=compute_metrics,
+        preprocess_logits_for_metrics=preprocess_logits,
         encoder_lr=encoder_lr,
         best_model_dir=str(best_dir),
     )
