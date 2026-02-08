@@ -45,12 +45,12 @@ auto_accum() {
 # Stage 1: micro_bs=16 (safe for most GPUs)
 S1_BS=${S1_BS:-16}
 S1_ACCUM=$(auto_accum $S1_BS)
-S1_EPOCHS=${S1_EPOCHS:-30}
+S1_EPOCHS=${S1_EPOCHS:-15}
 
 # Stage 2: micro_bs=8 (LoRA uses more memory)
 S2_BS=${S2_BS:-8}
 S2_ACCUM=$(auto_accum $S2_BS)
-S2_EPOCHS=${S2_EPOCHS:-15}
+S2_EPOCHS=${S2_EPOCHS:-10}
 
 # --- Print config ---
 echo "=== Ablation Config ==="

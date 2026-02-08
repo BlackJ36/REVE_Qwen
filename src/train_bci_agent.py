@@ -136,7 +136,7 @@ def run_stage1_training(
     gradient_accumulation_steps=1,
     learning_rate=5e-4,
     encoder_lr=1e-3,
-    num_epochs=30,
+    num_epochs=15,
     warmup_ratio=0.1,
     # Multi-spell
     min_spells=5,
@@ -186,6 +186,13 @@ def run_stage1_training(
     )
     collator = BCIAgentCollator(tokenizer)
 
+    # Eval every ~3 epochs worth of steps (avoids excessive eval overhead)
+    import math
+    n_gpus = max(1, torch.cuda.device_count())
+    steps_per_epoch = math.ceil(len(train_dataset) / (per_device_batch_size * gradient_accumulation_steps * n_gpus))
+    eval_steps = max(1, steps_per_epoch * 3)
+    print(f"Eval/save every {eval_steps} steps (~3 epochs, {steps_per_epoch} steps/epoch)")
+
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=num_epochs,
@@ -197,8 +204,10 @@ def run_stage1_training(
         lr_scheduler_type="cosine",
         bf16=True,
         logging_steps=10,
-        eval_strategy="epoch",
-        save_strategy="epoch",
+        eval_strategy="steps",
+        eval_steps=eval_steps,
+        save_strategy="steps",
+        save_steps=eval_steps,
         save_total_limit=2,
         load_best_model_at_end=False,
         report_to="tensorboard",
@@ -270,7 +279,7 @@ def run_stage2_training(
     gradient_accumulation_steps=2,
     learning_rate=2e-5,
     encoder_lr=5e-4,
-    num_epochs=15,
+    num_epochs=10,
     warmup_ratio=0.1,
     # Data
     nl_data_path=None,
@@ -333,6 +342,13 @@ def run_stage2_training(
     )
     collator = BCIAgentCollator(tokenizer)
 
+    # Eval every ~3 epochs worth of steps
+    import math
+    n_gpus = max(1, torch.cuda.device_count())
+    steps_per_epoch = math.ceil(len(train_dataset) / (per_device_batch_size * gradient_accumulation_steps * n_gpus))
+    eval_steps = max(1, steps_per_epoch * 3)
+    print(f"Eval/save every {eval_steps} steps (~3 epochs, {steps_per_epoch} steps/epoch)")
+
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=num_epochs,
@@ -344,8 +360,10 @@ def run_stage2_training(
         lr_scheduler_type="cosine",
         bf16=True,
         logging_steps=10,
-        eval_strategy="epoch",
-        save_strategy="epoch",
+        eval_strategy="steps",
+        eval_steps=eval_steps,
+        save_strategy="steps",
+        save_steps=eval_steps,
         save_total_limit=2,
         load_best_model_at_end=False,
         report_to="tensorboard",
