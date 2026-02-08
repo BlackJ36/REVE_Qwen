@@ -87,8 +87,15 @@ class BCIAgentModel(nn.Module):
         self.qwen.gradient_checkpointing_enable(**kwargs)
 
     def save_pretrained(self, path, **kwargs):
-        """Save trainable weights (encoder + Qwen adapter/embeddings)."""
+        """Save trainable weights only (encoder + Qwen trainable params).
+
+        Stage 1: saves encoder_trainable.pt + qwen_trainable.pt (~100MB total)
+        Stage 2: saves encoder_trainable.pt + LoRA adapter (~150MB total)
+        """
         from pathlib import Path as P
+
+        from peft import PeftModel
+
         save_dir = P(path)
         save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -100,8 +107,18 @@ class BCIAgentModel(nn.Module):
         }
         torch.save(encoder_state, save_dir / "encoder_trainable.pt")
 
-        # Save Qwen (LoRA adapter if stage 2, or full model if stage 1)
-        self.qwen.save_pretrained(str(save_dir), **kwargs)
+        if isinstance(self.qwen, PeftModel):
+            # Stage 2: save LoRA adapter + modules_to_save (embed_tokens/lm_head)
+            self.qwen.save_pretrained(str(save_dir), **kwargs)
+        else:
+            # Stage 1: only save trainable Qwen params (embed_tokens, maybe lm_head)
+            # Avoids saving full ~8-16GB frozen model
+            qwen_trainable = {
+                name: param.data
+                for name, param in self.qwen.named_parameters()
+                if param.requires_grad
+            }
+            torch.save(qwen_trainable, save_dir / "qwen_trainable.pt")
 
         # Save tokenizer
         self.tokenizer.save_pretrained(str(save_dir))
@@ -217,19 +234,33 @@ def build_bci_agent_model(
         use_fbcca=use_fbcca,
     )
 
-    # --- Load Stage 1 encoder weights for Stage 2 ---
+    # --- Load Stage 1 weights for Stage 2 ---
     if stage == 2 and stage1_checkpoint is not None:
-        ckpt_path = Path(stage1_checkpoint) / "encoder_trainable.pt"
-        if ckpt_path.exists():
-            print(f"Loading Stage 1 encoder weights from {ckpt_path}")
-            state_dict = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+        s1_dir = Path(stage1_checkpoint)
+
+        # Load encoder weights (FiLM + projector)
+        enc_path = s1_dir / "encoder_trainable.pt"
+        if enc_path.exists():
+            print(f"Loading Stage 1 encoder from {enc_path}")
+            state_dict = torch.load(enc_path, map_location="cpu", weights_only=True)
             missing, unexpected = encoder.load_state_dict(state_dict, strict=False)
             if missing:
                 print(f"  Missing keys: {missing}")
             if unexpected:
                 print(f"  Unexpected keys: {unexpected}")
         else:
-            print(f"WARNING: Stage 1 checkpoint not found at {ckpt_path}, training from scratch")
+            print(f"WARNING: {enc_path} not found, training encoder from scratch")
+
+        # Load trained embed_tokens / lm_head from Stage 1
+        qwen_path = s1_dir / "qwen_trainable.pt"
+        if qwen_path.exists():
+            print(f"Loading Stage 1 embeddings from {qwen_path}")
+            qwen_state = torch.load(qwen_path, map_location="cpu", weights_only=True)
+            missing, unexpected = qwen_model.load_state_dict(qwen_state, strict=False)
+            loaded = len(qwen_state) - len(unexpected)
+            print(f"  Loaded {loaded} embedding tensors")
+        else:
+            print(f"WARNING: {qwen_path} not found, special token embeddings untrained")
 
     # --- Assemble ---
     model = BCIAgentModel(encoder, qwen_model, tokenizer)
