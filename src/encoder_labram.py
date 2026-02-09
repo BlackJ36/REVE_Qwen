@@ -103,12 +103,18 @@ def build_labram_wrapper(n_chans=62, n_times=300, unfreeze_last_n=0):
     """
     from braindecode.models import Labram
 
+    from .preprocess import VALID_CHANNEL_NAMES
+
+    # Pretrained config has ~120 channels (full 10-10); override with our 62
+    chs_info = [{"ch_name": name} for name in VALID_CHANNEL_NAMES[:n_chans]]
+
     print(f"Loading LaBraM pretrained (n_chans={n_chans}, n_times={n_times})...")
     labram_model = Labram.from_pretrained(
         "braindecode/labram-pretrained",
         n_chans=n_chans,
         n_times=n_times,
         n_outputs=0,
+        chs_info=chs_info,
     )
 
     n_patches = n_times // labram_model.patch_size
