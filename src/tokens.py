@@ -57,9 +57,9 @@ def score_gap_to_conf_token(top1_score, top2_score):
     Higher gap means the top prediction is more confident.
     """
     gap = top1_score - top2_score
-    if gap > 0.15:
+    if gap > 0.16:
         return CONF_HIGH
-    elif gap > 0.05:
+    elif gap > 0.08:
         return CONF_MID
     else:
         return CONF_LOW

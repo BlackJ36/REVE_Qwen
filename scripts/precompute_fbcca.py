@@ -1,7 +1,12 @@
-"""Precompute FBCCA top-3 predictions for all trials and window offsets.
+"""Precompute FBCCA top-3 predictions for all trials.
 
 FBCCA requires GPU but dataset workers run on CPU. This script precomputes
 results once so training can do a simple index lookup.
+
+FBCCA is computed on the **full 600-point trial** (3s @ 200Hz) for maximum
+frequency resolution, then the result is broadcast across all sliding window
+offsets. This is valid because SSVEP is a steady-state response — the
+frequency content is stable across the trial.
 
 Usage:
     python scripts/precompute_fbcca.py --eeg_dir data/eeg_tensors
@@ -57,7 +62,12 @@ def compute_weighted_correlations(fbcca_module, eeg_batch):
 
 
 def precompute_split(eeg_dir, split, window_size, window_step, batch_size, device):
-    """Precompute FBCCA top-3 for one split."""
+    """Precompute FBCCA top-3 for one split.
+
+    FBCCA is computed on the full trial (all 600 timepoints) for maximum
+    frequency resolution. The result is then broadcast across all sliding
+    window offsets so the dataset can index by [trial_idx, offset_idx].
+    """
     eeg_path = eeg_dir / f"{split}_eeg.pt"
     if not eeg_path.exists():
         print(f"  Skipping {split}: {eeg_path} not found")
@@ -67,7 +77,7 @@ def precompute_split(eeg_dir, split, window_size, window_step, batch_size, devic
     eeg_data = data["eeg_data"]  # (N, 62, 600)
     N, C, total_T = eeg_data.shape
 
-    # Compute window offsets (same logic as BCIAgentStage1Dataset)
+    # Compute window offsets (for output shape compatibility with dataset)
     offsets = []
     start = 0
     while start + window_size <= total_T:
@@ -75,24 +85,25 @@ def precompute_split(eeg_dir, split, window_size, window_step, batch_size, devic
         start += window_step
     num_offsets = len(offsets)
 
-    print(f"  {split}: {N} trials × {num_offsets} offsets = {N * num_offsets} windows")
+    print(f"  {split}: {N} trials, FBCCA on full {total_T}pts, broadcast to {num_offsets} offsets")
 
-    fbcca = FBCCAFeatureExtractor(sfreq=200.0, n_timepoints=window_size).to(device)
+    # FBCCA on full trial length for maximum frequency resolution
+    fbcca = FBCCAFeatureExtractor(sfreq=200.0, n_timepoints=total_T).to(device)
 
-    all_top3_indices = torch.zeros(N, num_offsets, 3, dtype=torch.int64)
-    all_top3_scores = torch.zeros(N, num_offsets, 3, dtype=torch.float32)
+    # Compute once per trial: (N, 3)
+    trial_top3_indices = torch.zeros(N, 3, dtype=torch.int64)
+    trial_top3_scores = torch.zeros(N, 3, dtype=torch.float32)
 
-    for oi, offset in enumerate(offsets):
-        # Extract windows for this offset: (N, 62, window_size)
-        windows = eeg_data[:, :, offset:offset + window_size]
+    for start_idx in range(0, N, batch_size):
+        end_idx = min(start_idx + batch_size, N)
+        batch = eeg_data[start_idx:end_idx].to(device)  # (B, 62, 600)
+        top3_idx, top3_sc = compute_weighted_correlations(fbcca, batch)
+        trial_top3_indices[start_idx:end_idx] = top3_idx
+        trial_top3_scores[start_idx:end_idx] = top3_sc
 
-        # Process in batches
-        for start_idx in range(0, N, batch_size):
-            end_idx = min(start_idx + batch_size, N)
-            batch = windows[start_idx:end_idx].to(device)
-            top3_idx, top3_sc = compute_weighted_correlations(fbcca, batch)
-            all_top3_indices[start_idx:end_idx, oi] = top3_idx
-            all_top3_scores[start_idx:end_idx, oi] = top3_sc
+    # Broadcast to (N, num_offsets, 3) for dataset compatibility
+    all_top3_indices = trial_top3_indices.unsqueeze(1).expand(-1, num_offsets, -1).contiguous()
+    all_top3_scores = trial_top3_scores.unsqueeze(1).expand(-1, num_offsets, -1).contiguous()
 
     out_path = eeg_dir / f"{split}_fbcca.pt"
     torch.save({
@@ -103,9 +114,14 @@ def precompute_split(eeg_dir, split, window_size, window_step, batch_size, devic
 
     # Quick stats
     top1_labels = data["labels"]
-    top1_preds = all_top3_indices[:, 0, 0]  # first offset, top-1
+    top1_preds = trial_top3_indices[:, 0]  # top-1 prediction
     acc = (top1_preds == top1_labels).float().mean().item()
-    print(f"  Sanity check — offset=0 top-1 accuracy: {acc:.1%}")
+    print(f"  Sanity check — full-trial top-1 accuracy: {acc:.1%}")
+
+    # Top-3 accuracy
+    top3_match = (trial_top3_indices == top1_labels.unsqueeze(1)).any(dim=1)
+    top3_acc = top3_match.float().mean().item()
+    print(f"  Top-3 accuracy: {top3_acc:.1%}")
 
 
 def main():
@@ -121,7 +137,8 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     print(f"Precomputing FBCCA top-3 (device={device})")
     print(f"  eeg_dir: {eeg_dir}")
-    print(f"  window: {args.window_size}pts, step={args.window_step}pts")
+    print(f"  FBCCA on full trial (600pts), broadcast to window offsets")
+    print(f"  window: {args.window_size}pts, step={args.window_step}pts (for offset count)")
 
     for split in ["train", "val"]:
         precompute_split(
