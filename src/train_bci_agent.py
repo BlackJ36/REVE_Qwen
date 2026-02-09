@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 import torch
-from transformers import Trainer, TrainingArguments
+from transformers import EarlyStoppingCallback, Trainer, TrainingArguments
 
 from .dataset_bci_agent import (
     BCIAgentCollator,
@@ -208,8 +208,10 @@ def run_stage1_training(
         eval_steps=eval_steps,
         save_strategy="steps",
         save_steps=eval_steps,
-        save_total_limit=2,
-        load_best_model_at_end=False,
+        save_total_limit=3,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
         report_to="tensorboard",
         logging_dir=f"{output_dir}/logs",
         dataloader_num_workers=4,
@@ -235,6 +237,7 @@ def run_stage1_training(
         preprocess_logits_for_metrics=preprocess_logits,
         encoder_lr=encoder_lr,
         best_model_dir=str(best_dir),
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
     )
 
     # Print parameter summary
@@ -364,8 +367,10 @@ def run_stage2_training(
         eval_steps=eval_steps,
         save_strategy="steps",
         save_steps=eval_steps,
-        save_total_limit=2,
-        load_best_model_at_end=False,
+        save_total_limit=3,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
         report_to="tensorboard",
         logging_dir=f"{output_dir}/logs",
         dataloader_num_workers=4,
@@ -391,6 +396,7 @@ def run_stage2_training(
         preprocess_logits_for_metrics=preprocess_logits,
         encoder_lr=encoder_lr,
         best_model_dir=str(best_dir),
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
     )
 
     # Print parameter summary

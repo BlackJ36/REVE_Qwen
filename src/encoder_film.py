@@ -35,7 +35,7 @@ class FiLMHybridEncoder(nn.Module):
         dropout: dropout rate for the projector
     """
 
-    def __init__(self, backbone, fbcca, llm_dim, backbone_dim=512, fbcca_dim=200, dropout=0.1):
+    def __init__(self, backbone, fbcca, llm_dim, backbone_dim=512, fbcca_dim=200, dropout=0.3):
         super().__init__()
         self.reve = backbone  # kept as "reve" for checkpoint compatibility
         self.fbcca = fbcca
