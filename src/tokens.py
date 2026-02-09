@@ -7,7 +7,19 @@ BCI_SEP = "<|bci_sep|>"
 BCI_PAD = "<|bci_pad|>"
 BCI_TRANS = "<|bci_trans|>"
 
-CONTROL_TOKENS = [BCI_START, BCI_END, BCI_SEP, BCI_PAD, BCI_TRANS]
+# FBCCA candidate rank markers (injected as explicit tokens per spell)
+RANK1 = "<|rank1|>"
+RANK2 = "<|rank2|>"
+RANK3 = "<|rank3|>"
+
+# FBCCA confidence levels (gap-based: top1_score - top2_score)
+CONF_HIGH = "<|conf_high|>"  # gap > 0.15
+CONF_MID = "<|conf_mid|>"   # 0.05 < gap <= 0.15
+CONF_LOW = "<|conf_low|>"   # gap <= 0.05
+
+CANDIDATE_TOKENS = [RANK1, RANK2, RANK3, CONF_HIGH, CONF_MID, CONF_LOW]
+
+CONTROL_TOKENS = [BCI_START, BCI_END, BCI_SEP, BCI_PAD, BCI_TRANS] + CANDIDATE_TOKENS
 
 # Target tokens: 40 SSVEP targets
 TARGET_TOKENS = [f"<|t{i:02d}|>" for i in range(1, 41)]
@@ -36,3 +48,18 @@ def get_target_token_ids(tokenizer):
         i: tokenizer.convert_tokens_to_ids(tok)
         for i, tok in TARGET_INDEX_TO_TOKEN.items()
     }
+
+
+def score_gap_to_conf_token(top1_score, top2_score):
+    """Map FBCCA score gap to confidence token string.
+
+    Gap = top1 CCA correlation - top2 CCA correlation.
+    Higher gap means the top prediction is more confident.
+    """
+    gap = top1_score - top2_score
+    if gap > 0.15:
+        return CONF_HIGH
+    elif gap > 0.05:
+        return CONF_MID
+    else:
+        return CONF_LOW

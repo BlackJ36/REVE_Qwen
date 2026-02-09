@@ -15,6 +15,7 @@ from .dataset_bci_agent import (
     BCIAgentStage1Dataset,
     BCIAgentStage2Dataset,
 )
+from .dataset_bci_candidate import CandidateStage1Dataset, CandidateStage2Dataset
 from .metrics_bci_agent import build_metrics_fn
 from .model_bci_agent import build_bci_agent_model
 from .tokens import get_target_token_ids
@@ -131,6 +132,7 @@ def run_stage1_training(
     reve_dir="models",
     encoder_type="reve",
     use_fbcca=True,
+    fbcca_mode=None,
     # Training
     per_device_batch_size=16,
     gradient_accumulation_steps=1,
@@ -158,26 +160,31 @@ def run_stage1_training(
     print("Stage 1: Alignment Training")
     print("=" * 60)
 
-    print(f"\nBuilding model (Stage 1, encoder={encoder_type}, fbcca={use_fbcca})...")
+    # Resolve fbcca_mode
+    if fbcca_mode is None:
+        fbcca_mode = "film" if use_fbcca else "none"
+
+    print(f"\nBuilding model (Stage 1, encoder={encoder_type}, fbcca_mode={fbcca_mode})...")
     model, tokenizer = build_bci_agent_model(
         model_name=model_name,
         from_modelscope=from_modelscope,
         reve_dir=reve_dir,
         stage=1,
         encoder_type=encoder_type,
-        use_fbcca=use_fbcca,
+        fbcca_mode=fbcca_mode,
         window_size=window_size,
     )
 
     print("\nLoading datasets...")
-    train_dataset = BCIAgentStage1Dataset(
+    DatasetClass = CandidateStage1Dataset if fbcca_mode == "candidate" else BCIAgentStage1Dataset
+    train_dataset = DatasetClass(
         eeg_dir, tokenizer, split="train",
         num_eeg_tokens=num_eeg_tokens,
         min_spells=min_spells, max_spells=max_spells,
         window_size=window_size, window_step=window_step,
         exclude_subjects=exclude_subjects,
     )
-    val_dataset = BCIAgentStage1Dataset(
+    val_dataset = DatasetClass(
         eeg_dir, tokenizer, split="val",
         num_eeg_tokens=num_eeg_tokens,
         min_spells=min_spells, max_spells=max_spells,
@@ -271,6 +278,7 @@ def run_stage2_training(
     reve_dir="models",
     encoder_type="reve",
     use_fbcca=True,
+    fbcca_mode=None,
     # Stage 1 checkpoint
     stage1_checkpoint=None,
     # LoRA
@@ -306,17 +314,21 @@ def run_stage2_training(
     print("Stage 2: Instruction Tuning")
     print("=" * 60)
 
+    # Resolve fbcca_mode
+    if fbcca_mode is None:
+        fbcca_mode = "film" if use_fbcca else "none"
+
     if stage1_checkpoint is None:
         print("WARNING: No Stage 1 checkpoint specified. Training encoder from scratch.")
 
-    print(f"\nBuilding model (Stage 2, encoder={encoder_type}, fbcca={use_fbcca})...")
+    print(f"\nBuilding model (Stage 2, encoder={encoder_type}, fbcca_mode={fbcca_mode})...")
     model, tokenizer = build_bci_agent_model(
         model_name=model_name,
         from_modelscope=from_modelscope,
         reve_dir=reve_dir,
         stage=2,
         encoder_type=encoder_type,
-        use_fbcca=use_fbcca,
+        fbcca_mode=fbcca_mode,
         stage1_checkpoint=stage1_checkpoint,
         lora_rank=lora_rank,
         lora_alpha=lora_alpha,
@@ -325,7 +337,11 @@ def run_stage2_training(
     )
 
     print("\nLoading datasets...")
-    train_dataset = BCIAgentStage2Dataset(
+    if fbcca_mode == "candidate":
+        DatasetClass = CandidateStage2Dataset
+    else:
+        DatasetClass = BCIAgentStage2Dataset
+    train_dataset = DatasetClass(
         eeg_dir, tokenizer, split="train",
         nl_data_path=nl_data_path,
         weights=type_weights,
@@ -334,7 +350,7 @@ def run_stage2_training(
         window_size=window_size, window_step=window_step,
         exclude_subjects=exclude_subjects,
     )
-    val_dataset = BCIAgentStage2Dataset(
+    val_dataset = DatasetClass(
         eeg_dir, tokenizer, split="val",
         nl_data_path=nl_data_path,
         weights=type_weights,

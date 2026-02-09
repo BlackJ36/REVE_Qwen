@@ -154,6 +154,7 @@ def build_bci_agent_model(
     # Encoder config
     encoder_type="reve",
     use_fbcca=True,
+    fbcca_mode=None,
     window_size=300,
     sfreq=200.0,
     encoder_dropout=0.1,
@@ -163,11 +164,23 @@ def build_bci_agent_model(
     Stage 1: Qwen frozen (except embed_tokens), encoder trainable
     Stage 2: Qwen with LoRA, encoder trainable (loaded from Stage 1)
 
+    fbcca_mode controls FBCCA integration:
+      - "film": FiLM modulation (FBCCA modulates backbone via gamma/beta)
+      - "candidate": FBCCA info via tokens (encoder is backbone-only)
+      - "none": no FBCCA at all (pure backbone)
+      - None: infer from use_fbcca for backward compatibility
+
     Returns (model, tokenizer).
     """
     from pathlib import Path
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    # Resolve fbcca_mode (backward compat with use_fbcca boolean)
+    if fbcca_mode is None:
+        fbcca_mode = "film" if use_fbcca else "none"
+    # For candidate mode, encoder runs without FiLM (FBCCA comes as tokens)
+    encoder_use_fbcca = (fbcca_mode == "film")
 
     # --- Load Qwen3-4B (text-only) ---
     if from_modelscope:
@@ -245,7 +258,7 @@ def build_bci_agent_model(
         sfreq=sfreq,
         dropout=encoder_dropout,
         encoder_type=encoder_type,
-        use_fbcca=use_fbcca,
+        use_fbcca=encoder_use_fbcca,
     )
 
     # --- Load Stage 1 weights for Stage 2 ---

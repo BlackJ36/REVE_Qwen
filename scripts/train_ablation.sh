@@ -1,12 +1,12 @@
 #!/bin/bash
-# Ablation study: 4 encoder configurations × 2 stages
+# Ablation study: 5 encoder configurations × 2 stages
 #
 # Usage:
 #   bash scripts/train_ablation.sh s1 [experiment]   # Stage 1 only
 #   bash scripts/train_ablation.sh s2 [experiment]   # Stage 2 only (needs S1 checkpoint)
 #   bash scripts/train_ablation.sh all [experiment]   # Stage 1 → Stage 2
 #
-# experiment: reve_fbcca | reve_only | labram_fbcca | labram_only | all (default)
+# experiment: reve_fbcca | reve_candidate | reve_only | labram_fbcca | labram_only | all (default)
 #
 # GPU selection:
 #   CUDA_VISIBLE_DEVICES=2,3 bash scripts/train_ablation.sh s1 reve_fbcca
@@ -65,10 +65,11 @@ STAGE=${1:-all}
 EXPERIMENT=${2:-all}
 
 CONFIGS=(
-    "reve_fbcca:reve:--use_fbcca"
-    "reve_only:reve:--no_fbcca"
-    "labram_fbcca:labram:--use_fbcca"
-    "labram_only:labram:--no_fbcca"
+    "reve_fbcca:reve:--fbcca_mode film"
+    "reve_candidate:reve:--fbcca_mode candidate"
+    "reve_only:reve:--fbcca_mode none"
+    "labram_fbcca:labram:--fbcca_mode film"
+    "labram_only:labram:--fbcca_mode none"
 )
 
 run_stage1() {

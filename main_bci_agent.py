@@ -24,10 +24,16 @@ def parse_args():
     # Encoder backbone
     parser.add_argument("--encoder_type", type=str, default="reve", choices=["reve", "labram"],
                         help="EEG encoder backbone: 'reve' (512d) or 'labram' (200d)")
+    parser.add_argument("--fbcca_mode", type=str, default=None,
+                        choices=["film", "candidate", "none"],
+                        help="FBCCA integration: 'film' (FiLM modulation), "
+                             "'candidate' (inject as tokens), 'none' (backbone-only)")
+    # Legacy flags (backward compat)
     parser.add_argument("--use_fbcca", action="store_true", default=True,
-                        help="Enable FBCCA FiLM modulation (default: True)")
+                        help="Enable FBCCA FiLM modulation (default: True). "
+                             "Prefer --fbcca_mode instead.")
     parser.add_argument("--no_fbcca", dest="use_fbcca", action="store_false",
-                        help="Disable FBCCA, use backbone-only")
+                        help="Disable FBCCA. Prefer --fbcca_mode none instead.")
 
     # Stage 2 specific
     parser.add_argument("--stage1_checkpoint", type=str, default=None,
@@ -83,6 +89,11 @@ def main():
     if args.output_dir is None:
         args.output_dir = f"output_bci_agent_s{args.stage}"
 
+    # Resolve fbcca_mode: explicit --fbcca_mode takes priority over --use_fbcca/--no_fbcca
+    fbcca_mode = args.fbcca_mode
+    if fbcca_mode is None:
+        fbcca_mode = "film" if args.use_fbcca else "none"
+
     if args.stage == 1:
         batch_size = args.batch_size or 64
         grad_accum = args.grad_accum or 2
@@ -101,7 +112,7 @@ def main():
             from_modelscope=args.from_modelscope,
             reve_dir=args.reve_dir,
             encoder_type=args.encoder_type,
-            use_fbcca=args.use_fbcca,
+            fbcca_mode=fbcca_mode,
             per_device_batch_size=batch_size,
             gradient_accumulation_steps=grad_accum,
             learning_rate=lr,
@@ -135,7 +146,7 @@ def main():
             from_modelscope=args.from_modelscope,
             reve_dir=args.reve_dir,
             encoder_type=args.encoder_type,
-            use_fbcca=args.use_fbcca,
+            fbcca_mode=fbcca_mode,
             stage1_checkpoint=args.stage1_checkpoint,
             lora_rank=args.lora_rank,
             lora_alpha=args.lora_alpha,
