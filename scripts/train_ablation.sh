@@ -76,6 +76,15 @@ run_stage1() {
     local name=$1 encoder_type=$2 fbcca_flag=$3
     local output_dir="output_ablation_${name}_s1"
 
+    # Candidate mode requires precomputed FBCCA
+    if [[ "$fbcca_flag" == *"candidate"* ]]; then
+        if [ ! -f "data/eeg_tensors/train_fbcca.pt" ]; then
+            echo "ERROR: Precomputed FBCCA not found for candidate mode."
+            echo "  Run: python scripts/precompute_fbcca.py --eeg_dir data/eeg_tensors"
+            return 1
+        fi
+    fi
+
     echo "============================================================"
     echo "Stage 1: ${name} (encoder=${encoder_type}, ${fbcca_flag})"
     echo "Output: ${output_dir}"
