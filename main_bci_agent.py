@@ -43,6 +43,9 @@ def parse_args():
     parser.add_argument("--lora_dropout", type=float, default=0.05)
     parser.add_argument("--nl_data_path", type=str, default=None,
                         help="Path to pure NL JSONL data for Stage 2 Type C")
+    parser.add_argument("--word_vocab", type=str, default=None,
+                        help="Path to word vocab JSON for Stage 2 candidate mode "
+                             "(default: built-in 198 common + 48 BCI words)")
 
     # Training
     parser.add_argument("--batch_size", type=int, default=None,
@@ -158,6 +161,7 @@ def main():
             num_epochs=epochs,
             warmup_ratio=args.warmup_ratio,
             nl_data_path=args.nl_data_path,
+            word_vocab_path=args.word_vocab,
             min_spells=min_spells,
             max_spells=max_spells,
             window_size=args.window_size,

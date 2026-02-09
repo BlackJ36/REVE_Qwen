@@ -295,6 +295,7 @@ def run_stage2_training(
     # Data
     nl_data_path=None,
     type_weights=None,
+    word_vocab_path=None,
     # Multi-spell
     min_spells=3,
     max_spells=8,
@@ -336,11 +337,18 @@ def run_stage2_training(
         window_size=window_size,
     )
 
-    print("\nLoading datasets...")
+    # Build word vocab for candidate mode
+    word_vocab = None
     if fbcca_mode == "candidate":
+        from .word_vocab import WordVocab
+        word_vocab = WordVocab(word_vocab_path)
         DatasetClass = CandidateStage2Dataset
     else:
         DatasetClass = BCIAgentStage2Dataset
+
+    print("\nLoading datasets...")
+    # word_vocab is only used by CandidateStage2Dataset; BCIAgentStage2Dataset ignores it
+    extra_kwargs = {"word_vocab": word_vocab} if fbcca_mode == "candidate" else {}
     train_dataset = DatasetClass(
         eeg_dir, tokenizer, split="train",
         nl_data_path=nl_data_path,
@@ -349,6 +357,7 @@ def run_stage2_training(
         min_spells=min_spells, max_spells=max_spells,
         window_size=window_size, window_step=window_step,
         exclude_subjects=exclude_subjects,
+        **extra_kwargs,
     )
     val_dataset = DatasetClass(
         eeg_dir, tokenizer, split="val",
@@ -358,6 +367,7 @@ def run_stage2_training(
         min_spells=min_spells, max_spells=max_spells,
         window_size=window_size, window_step=window_step,
         exclude_subjects=exclude_subjects,
+        **extra_kwargs,
     )
     collator = BCIAgentCollator(tokenizer)
 

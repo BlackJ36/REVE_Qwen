@@ -36,7 +36,7 @@ from .tokens import (
     TARGET_INDEX_TO_TOKEN,
     score_gap_to_conf_token,
 )
-from .word_vocab import generate_random_sequence, sample_word, word_to_labels
+from .word_vocab import WordVocab, generate_random_sequence, sample_word, word_to_labels
 
 
 class CandidateStage1Dataset(Dataset):
@@ -283,6 +283,7 @@ class CandidateStage2Dataset(Dataset):
         window_size=300,
         window_step=100,
         exclude_subjects=None,
+        word_vocab=None,
     ):
         self.eeg_dir = Path(eeg_dir)
         self.tokenizer = tokenizer
@@ -292,6 +293,9 @@ class CandidateStage2Dataset(Dataset):
         self.window_size = window_size
         self.window_step = window_step
         self.split = split
+
+        # Word vocabulary (custom or built-in)
+        self.vocab = word_vocab if word_vocab is not None else WordVocab()
 
         # Weights for data types
         self.weights = weights or {"word": 0.4, "random": 0.3, "nl": 0.15, "error": 0.15}
@@ -423,7 +427,7 @@ class CandidateStage2Dataset(Dataset):
 
     def _make_word_sequence(self):
         """Spell a real word using EEG trials with matching labels."""
-        word, label_indices = sample_word()
+        word, label_indices = self.vocab.sample()
         if label_indices is None:
             # Fallback to random
             return self._make_random_sequence()
@@ -443,7 +447,7 @@ class CandidateStage2Dataset(Dataset):
     def _make_random_sequence(self):
         """Random char sequence — forces model to rely on EEG, not LM."""
         length = random.randint(self.min_spells, self.max_spells)
-        word, label_indices = generate_random_sequence(length)
+        word, label_indices = self.vocab.random_sequence(length)
 
         group_key = self._find_group_for_labels(label_indices)
         if group_key is None:

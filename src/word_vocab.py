@@ -5,9 +5,19 @@ word sequences from real EEG data. Random sequences are included to prevent
 the LLM from learning language-model shortcuts that ignore EEG signals.
 
 All words use only A-Z characters available on the 40-target SSVEP keyboard.
+
+To use a custom vocabulary, create a JSON file:
+    {
+        "common": ["THE", "AND", "FOR", ...],
+        "bci": ["HELP", "YES", "NO", ...],
+        "weights": {"common": 0.5, "bci": 0.3, "random": 0.2}
+    }
+Then pass --word_vocab path/to/vocab.json to training.
 """
 
+import json
 import random
+from pathlib import Path
 
 from .templates_zh import KEYBOARD_CHARS
 
@@ -110,3 +120,67 @@ def generate_random_sequence(length):
     chars = [random.choice(KEYBOARD_CHARS[:26]) for _ in range(length)]
     word = "".join(chars)
     return word, word_to_labels(word)
+
+
+class WordVocab:
+    """Configurable word vocabulary for Stage 2 spelling.
+
+    Supports loading from a JSON file or using built-in defaults.
+
+    JSON format:
+        {
+            "common": ["THE", "AND", ...],
+            "bci": ["HELP", "YES", ...],
+            "weights": {"common": 0.5, "bci": 0.3, "random": 0.2}
+        }
+
+    All words are auto-filtered to A-Z only. Invalid words are silently dropped.
+
+    Usage:
+        vocab = WordVocab()                          # built-in defaults
+        vocab = WordVocab("path/to/vocab.json")      # from file
+        word, labels = vocab.sample()                 # sample a word
+        word, labels = vocab.random_sequence(4)       # random chars
+    """
+
+    def __init__(self, path=None):
+        if path is not None:
+            self._load_from_file(path)
+        else:
+            self.common = list(COMMON_WORDS)
+            self.bci = list(BCI_PHRASES)
+            self.weights = {"common": 0.5, "bci": 0.3, "random": 0.2}
+
+    def _load_from_file(self, path):
+        path = Path(path)
+        with open(path) as f:
+            data = json.load(f)
+        self.common = _filter_words([w.upper() for w in data.get("common", [])])
+        self.bci = _filter_words([w.upper() for w in data.get("bci", [])])
+        self.weights = data.get("weights", {"common": 0.5, "bci": 0.3, "random": 0.2})
+        # Validate weights keys
+        for key in self.weights:
+            if key not in ("common", "bci", "random"):
+                raise ValueError(f"Unknown weight key: {key!r}. Must be common/bci/random.")
+        if not self.common and not self.bci:
+            raise ValueError(f"Vocab file {path} has no valid words after filtering to A-Z")
+        print(f"WordVocab: loaded {len(self.common)} common + {len(self.bci)} bci words from {path}")
+
+    def sample(self):
+        """Sample a word. Returns (word, label_indices)."""
+        categories = list(self.weights.keys())
+        probs = [self.weights[c] for c in categories]
+        choice = random.choices(categories, weights=probs, k=1)[0]
+
+        if choice == "common" and self.common:
+            word = random.choice(self.common)
+        elif choice == "bci" and self.bci:
+            word = random.choice(self.bci)
+        else:
+            return self.random_sequence(random.randint(2, 6))
+
+        return word, word_to_labels(word)
+
+    def random_sequence(self, length):
+        """Generate random A-Z sequence. Returns (word, label_indices)."""
+        return generate_random_sequence(length)
