@@ -69,9 +69,11 @@ class LaBraMWrapper(nn.Module):
         Returns:
             (B, 200) if pool=True, (B, n_chans, 200) if pool=False
         """
-        # No padding: let SegmentPatch truncate to floor(T/patch_size) patches.
-        # For T=300, patch_size=200: 1 patch per channel → n_chans tokens.
-        # This preserves 1:1 token-per-channel mapping matching REVE's output.
+        # Match input dtype to model parameters (DeepSpeed may cast to bf16)
+        param_dtype = next(self.labram.parameters()).dtype
+        if eeg_windows.dtype != param_dtype:
+            eeg_windows = eeg_windows.to(dtype=param_dtype)
+
         out = self.labram.forward_features(
             eeg_windows,
             return_patch_tokens=not pool,
