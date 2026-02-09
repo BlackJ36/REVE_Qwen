@@ -93,6 +93,10 @@ def build_labram_wrapper(n_chans=62, n_times=300, unfreeze_last_n=0):
     producing n_chans=62 tokens of embed_dim=200. The last 100 timepoints
     (0.5s) are truncated by SegmentPatch, keeping 1s of signal per patch.
 
+    Pretrained LaBraM has position_embedding (1, 129, 200) for 128 channels
+    and temporal_embedding (1, 16, 200) for 16 patches. We create the model
+    with our dimensions (62 ch, 1 patch) and slice pretrained embeddings.
+
     Args:
         n_chans: number of EEG channels
         n_times: window length in timepoints
@@ -102,20 +106,40 @@ def build_labram_wrapper(n_chans=62, n_times=300, unfreeze_last_n=0):
         LaBraMWrapper instance
     """
     from braindecode.models import Labram
+    from huggingface_hub import hf_hub_download
+    from safetensors.torch import load_file
 
     from .preprocess import VALID_CHANNEL_NAMES
 
-    # Pretrained config has ~120 channels (full 10-10); override with our 62
     chs_info = [{"ch_name": name} for name in VALID_CHANNEL_NAMES[:n_chans]]
 
     print(f"Loading LaBraM pretrained (n_chans={n_chans}, n_times={n_times})...")
-    labram_model = Labram.from_pretrained(
-        "braindecode/labram-pretrained",
-        n_chans=n_chans,
-        n_times=n_times,
-        n_outputs=0,
-        chs_info=chs_info,
+
+    # Create model with our dimensions (not pretrained's 128ch/16patch)
+    labram_model = Labram(
+        n_chans=n_chans, n_times=n_times, n_outputs=0, chs_info=chs_info,
     )
+
+    # Load pretrained weights, adapting mismatched embedding sizes
+    weight_path = hf_hub_download("braindecode/labram-pretrained", "model.safetensors")
+    pretrained = load_file(weight_path)
+    model_state = labram_model.state_dict()
+
+    for key, src_tensor in pretrained.items():
+        if key not in model_state:
+            continue
+        dst_shape = model_state[key].shape
+        if src_tensor.shape == dst_shape:
+            model_state[key] = src_tensor
+        else:
+            # Slice pretrained embedding to fit our smaller dimensions
+            # position_embedding: (1,129,200) → (1,63,200)
+            # temporal_embedding: (1,16,200) → (1,2,200)
+            slices = tuple(slice(0, d) for d in dst_shape)
+            model_state[key] = src_tensor[slices]
+            print(f"  Adapted {key}: {tuple(src_tensor.shape)} → {dst_shape}")
+
+    labram_model.load_state_dict(model_state)
 
     n_patches = n_times // labram_model.patch_size
     print(f"LaBraM: patch_size={labram_model.patch_size}, n_patches={n_patches}, "
