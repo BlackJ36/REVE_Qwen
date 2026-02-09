@@ -105,6 +105,9 @@ def build_labram_wrapper(n_chans=62, n_times=300, unfreeze_last_n=0):
     Returns:
         LaBraMWrapper instance
     """
+    import json
+
+    import torch
     from braindecode.models import Labram
     from huggingface_hub import hf_hub_download
     from safetensors.torch import load_file
@@ -120,7 +123,24 @@ def build_labram_wrapper(n_chans=62, n_times=300, unfreeze_last_n=0):
         n_chans=n_chans, n_times=n_times, n_outputs=0, chs_info=chs_info,
     )
 
-    # Load pretrained weights, adapting mismatched embedding sizes
+    # Load pretrained config to get original channel ordering
+    config_path = hf_hub_download("braindecode/labram-pretrained", "config.json")
+    with open(config_path) as f:
+        pretrained_config = json.load(f)
+    pretrained_ch_names = [ch["ch_name"] for ch in pretrained_config["chs_info"]]
+
+    # Build case-insensitive mapping: our channel name → pretrained index
+    pretrained_name_to_idx = {name.upper(): i for i, name in enumerate(pretrained_ch_names)}
+    our_ch_indices = []
+    for name in VALID_CHANNEL_NAMES[:n_chans]:
+        idx = pretrained_name_to_idx.get(name.upper())
+        if idx is None:
+            raise ValueError(f"Channel {name!r} not found in pretrained LaBraM config")
+        our_ch_indices.append(idx)
+    print(f"  Mapped {n_chans} channels to pretrained indices "
+          f"(range {min(our_ch_indices)}-{max(our_ch_indices)} of {len(pretrained_ch_names)})")
+
+    # Load pretrained weights with proper embedding adaptation
     weight_path = hf_hub_download("braindecode/labram-pretrained", "model.safetensors")
     pretrained = load_file(weight_path)
     model_state = labram_model.state_dict()
@@ -131,13 +151,23 @@ def build_labram_wrapper(n_chans=62, n_times=300, unfreeze_last_n=0):
         dst_shape = model_state[key].shape
         if src_tensor.shape == dst_shape:
             model_state[key] = src_tensor
-        else:
-            # Slice pretrained embedding to fit our smaller dimensions
-            # position_embedding: (1,129,200) → (1,63,200)
-            # temporal_embedding: (1,16,200) → (1,2,200)
+        elif key == "position_embedding":
+            # (1, 129, 200) → (1, 63, 200): CLS token (row 0) + our 62 channels
+            # Row i+1 in position_embedding corresponds to channel i in chs_info
+            indices = [0] + [idx + 1 for idx in our_ch_indices]  # CLS + channels
+            model_state[key] = src_tensor[:, indices, :]
+            print(f"  Adapted {key}: {tuple(src_tensor.shape)} → {tuple(model_state[key].shape)} "
+                  f"(channel-mapped)")
+        elif key == "temporal_embedding":
+            # (1, 16, 200) → (1, n_patches+1, 200): sequential temporal patches
             slices = tuple(slice(0, d) for d in dst_shape)
             model_state[key] = src_tensor[slices]
-            print(f"  Adapted {key}: {tuple(src_tensor.shape)} → {dst_shape}")
+            print(f"  Adapted {key}: {tuple(src_tensor.shape)} → {dst_shape} (sliced)")
+        else:
+            # Other mismatched shapes: try slicing
+            slices = tuple(slice(0, d) for d in dst_shape)
+            model_state[key] = src_tensor[slices]
+            print(f"  Adapted {key}: {tuple(src_tensor.shape)} → {dst_shape} (sliced)")
 
     labram_model.load_state_dict(model_state)
 
