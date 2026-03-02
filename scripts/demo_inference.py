@@ -265,7 +265,11 @@ def main():
                         help="Word to spell (e.g. HELLO)")
     parser.add_argument("--n_trials", type=int, default=20,
                         help="Number of random trials (when --word not set)")
+    parser.add_argument("--from_modelscope", action="store_true", default=True)
+    parser.add_argument("--no_modelscope", action="store_true")
     args = parser.parse_args()
+    if args.no_modelscope:
+        args.from_modelscope = False
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
@@ -277,6 +281,7 @@ def main():
         encoder_type=args.encoder_type,
         reve_dir=args.reve_dir,
         device=device,
+        from_modelscope=args.from_modelscope,
     )
 
     # Load validation data

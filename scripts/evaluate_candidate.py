@@ -41,6 +41,7 @@ def load_model_for_inference(
     reve_dir="models",
     window_size=300,
     device="cuda",
+    from_modelscope=True,
 ):
     """Load a trained S2 model for inference."""
     checkpoint_dir = Path(checkpoint_dir)
@@ -48,7 +49,7 @@ def load_model_for_inference(
     # Build model with S2 architecture (LoRA), loading S1 encoder weights
     model, tokenizer = build_bci_agent_model(
         model_name=model_name,
-        from_modelscope=False,
+        from_modelscope=from_modelscope,
         reve_dir=reve_dir,
         stage=2,
         stage1_checkpoint=s1_checkpoint,
@@ -322,8 +323,14 @@ def main():
     parser.add_argument("--reve_dir", type=str, default="models")
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--no_exclude_bad", action="store_true")
+    parser.add_argument("--from_modelscope", action="store_true", default=True,
+                        help="Download model from ModelScope (default: True)")
+    parser.add_argument("--no_modelscope", action="store_true",
+                        help="Download from HuggingFace instead of ModelScope")
     parser.add_argument("--device", type=str, default="cuda")
     args = parser.parse_args()
+    if args.no_modelscope:
+        args.from_modelscope = False
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
@@ -335,6 +342,7 @@ def main():
         encoder_type=args.encoder_type,
         reve_dir=args.reve_dir,
         device=device,
+        from_modelscope=args.from_modelscope,
     )
 
     print("Running evaluation...")
