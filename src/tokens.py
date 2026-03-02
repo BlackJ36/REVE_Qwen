@@ -50,34 +50,48 @@ def get_target_token_ids(tokenizer):
     }
 
 
-def score_gap_to_conf_token(top1_score, top2_score):
-    """Map FBCCA score gap to confidence token string.
+# Calibrated confidence thresholds per decoder type (at 3.0s / 600pt).
+# Each tuple: (high_threshold, mid_threshold).
+# Calibrated to yield ~40% HIGH, ~25% MID, ~35% LOW on training set.
+CONF_THRESHOLDS = {
+    "fbcca": (0.16, 0.08),   # FBCCA: HIGH 41% (91.5% acc), MID 20% (64.1%), LOW 39% (28.9%)
+    "trca":  (0.30, 0.12),   # TRCA: estimated, recalibrate when precomputed data available
+    "etrca": (0.45, 0.18),   # eTRCA: much wider gaps — HIGH 40% (100%), MID 25% (99%), LOW 35% (55%)
+}
 
-    Gap = top1 CCA correlation - top2 CCA correlation.
-    Higher gap means the top prediction is more confident.
+
+def score_gap_to_conf_token(top1_score, top2_score, decoder_type="fbcca"):
+    """Map decoder score gap to confidence token string.
+
+    Gap = top1 correlation - top2 correlation.
+    Thresholds are calibrated per decoder type.
     """
     gap = top1_score - top2_score
-    if gap > 0.16:
+    high_th, mid_th = CONF_THRESHOLDS.get(decoder_type, CONF_THRESHOLDS["fbcca"])
+    if gap > high_th:
         return CONF_HIGH
-    elif gap > 0.08:
+    elif gap > mid_th:
         return CONF_MID
     else:
         return CONF_LOW
 
 
-def score_gap_to_conf_token_adaptive(top1_score, top2_score, duration_scale=1.0):
-    """Duration-adaptive confidence threshold.
+def score_gap_to_conf_token_adaptive(top1_score, top2_score, duration_scale=1.0,
+                                     decoder_type="fbcca"):
+    """Duration-adaptive, decoder-aware confidence threshold.
 
-    Shorter trials produce smaller FBCCA score gaps due to lower frequency
-    resolution. Scale thresholds proportionally so confidence remains calibrated.
+    Shorter trials produce smaller score gaps. Scale thresholds proportionally
+    so confidence remains calibrated across durations and decoder types.
 
     Args:
         duration_scale: trial_duration_pts / 600.0 (1.0 for 3s, 0.5 for 1.5s, etc.)
+        decoder_type: "fbcca", "trca", or "etrca"
     """
     gap = top1_score - top2_score
-    if gap > 0.16 * duration_scale:
+    high_th, mid_th = CONF_THRESHOLDS.get(decoder_type, CONF_THRESHOLDS["fbcca"])
+    if gap > high_th * duration_scale:
         return CONF_HIGH
-    elif gap > 0.08 * duration_scale:
+    elif gap > mid_th * duration_scale:
         return CONF_MID
     else:
         return CONF_LOW

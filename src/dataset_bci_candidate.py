@@ -247,7 +247,8 @@ class CandidateStage1Dataset(Dataset):
 
             # Confidence token (duration-adaptive)
             conf_token = score_gap_to_conf_token_adaptive(
-                top3_sc[0], top3_sc[1], self.duration_scale)
+                top3_sc[0], top3_sc[1], self.duration_scale,
+                decoder_type=self.decoder_type)
             input_ids.append(self.conf_ids[conf_token])
             labels.append(-100)
 
@@ -577,7 +578,8 @@ class CandidateStage2Dataset(Dataset):
 
             # Confidence (duration-adaptive)
             conf_token = score_gap_to_conf_token_adaptive(
-                top3_sc[0], top3_sc[1], self.duration_scale)
+                top3_sc[0], top3_sc[1], self.duration_scale,
+                decoder_type=self.decoder_type)
             input_ids.append(self.conf_ids[conf_token])
             labels.append(-100)
 
