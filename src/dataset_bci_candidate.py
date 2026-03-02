@@ -239,11 +239,13 @@ class CandidateStage1Dataset(Dataset):
             input_ids.extend([self.bci_pad_id] * n)
             labels.extend([-100] * n)
 
-            # Candidate dropout: replace with random noise to prevent shortcut learning
+            # Candidate dropout: randomize indices but keep original scores,
+            # so confidence token distribution stays realistic and model can't
+            # detect dropout from score patterns alone.
             top3_idx, top3_sc = fbcca_candidates[i]
             if self.cand_dropout > 0 and random.random() < self.cand_dropout:
                 top3_idx = random.sample(range(40), 3)
-                top3_sc = [0.0, 0.0, 0.0]
+                # Keep original scores → confidence token looks natural
 
             # Decoder candidates: [rank1][tXX] [rank2][tYY] [rank3][tZZ]
             for rank_j in range(3):
@@ -577,11 +579,10 @@ class CandidateStage2Dataset(Dataset):
             input_ids.extend([self.bci_pad_id] * n)
             labels.extend([-100] * n)
 
-            # Candidate dropout: replace with random noise to prevent shortcut learning
+            # Candidate dropout: randomize indices, keep scores
             top3_idx, top3_sc = fbcca_candidates[i]
             if self.cand_dropout > 0 and random.random() < self.cand_dropout:
                 top3_idx = random.sample(range(40), 3)
-                top3_sc = [0.0, 0.0, 0.0]
 
             # Decoder candidates
             for rank_j in range(3):
