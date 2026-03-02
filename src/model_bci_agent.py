@@ -68,7 +68,7 @@ class BCIAgentModel(nn.Module):
                 sample_tokens = projected[offset:offset + K_i].reshape(-1, dim)
                 pad_positions = bci_pad_mask[i].nonzero(as_tuple=True)[0]
                 n = min(len(pad_positions), sample_tokens.size(0))
-                inputs_embeds[i, pad_positions[:n]] = sample_tokens[:n]
+                inputs_embeds[i, pad_positions[:n]] = sample_tokens[:n].to(inputs_embeds.dtype)
                 offset += K_i
 
         return self.qwen(
