@@ -106,13 +106,13 @@ class BCIAgentTrainer(Trainer):
                         self._save_weights(self.best_model_dir)
                     break
 
-    def log(self, logs):
+    def log(self, logs, *args, **kwargs):
         """Append per-group learning rates to TensorBoard logs."""
         if self.optimizer is not None:
             for group in self.optimizer.param_groups:
                 name = group.get("name", "unknown")
                 logs[f"lr_{name}"] = group["lr"]
-        super().log(logs)
+        super().log(logs, *args, **kwargs)
 
     def _save(self, output_dir=None, state_dict=None):
         output_dir = output_dir if output_dir is not None else self.args.output_dir
