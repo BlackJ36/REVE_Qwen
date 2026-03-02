@@ -71,7 +71,7 @@ echo "Duration:    ${DURATION}s"
 CONFIGS=(
     "reve_fbcca:reve:--fbcca_mode film"
     "reve_candidate:reve:--fbcca_mode candidate --decoder_type fbcca"
-    "reve_etrca:reve:--fbcca_mode candidate --decoder_type etrca"
+    "reve_etrca:reve:--fbcca_mode candidate --decoder_type etrca --cand_dropout 0.3"
     "reve_only:reve:--fbcca_mode none"
     "labram_fbcca:labram:--fbcca_mode film"
     "labram_only:labram:--fbcca_mode none"

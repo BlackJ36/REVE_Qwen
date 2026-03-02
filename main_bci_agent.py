@@ -32,6 +32,10 @@ def parse_args():
                         choices=["fbcca", "trca", "etrca"],
                         help="Decoder type for candidate injection: 'fbcca', 'trca', or 'etrca' "
                              "(only used when --fbcca_mode=candidate)")
+    parser.add_argument("--cand_dropout", type=float, default=0.0,
+                        help="Candidate dropout rate (0.0-1.0). Randomly replaces decoder "
+                             "candidates with noise during training to prevent shortcut learning. "
+                             "Only used when --fbcca_mode=candidate. Recommended: 0.3")
     # Legacy flags (backward compat)
     parser.add_argument("--use_fbcca", action="store_true", default=True,
                         help="Enable FBCCA FiLM modulation (default: True). "
@@ -142,6 +146,7 @@ def main():
             trial_duration_pts=trial_duration_pts,
             exclude_subjects=exclude_subjects,
             decoder_type=args.decoder_type,
+            cand_dropout=args.cand_dropout,
             deepspeed_config=args.deepspeed,
         )
 
@@ -184,6 +189,7 @@ def main():
             trial_duration_pts=trial_duration_pts,
             exclude_subjects=exclude_subjects,
             decoder_type=args.decoder_type,
+            cand_dropout=args.cand_dropout,
             deepspeed_config=args.deepspeed,
         )
 

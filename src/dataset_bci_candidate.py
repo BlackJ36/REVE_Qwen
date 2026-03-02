@@ -71,6 +71,7 @@ class CandidateStage1Dataset(Dataset):
         exclude_subjects=None,
         trial_duration_pts=600,
         decoder_type="fbcca",
+        cand_dropout=0.0,
     ):
         self.eeg_dir = Path(eeg_dir)
         self.tokenizer = tokenizer
@@ -80,6 +81,7 @@ class CandidateStage1Dataset(Dataset):
         self.window_size = window_size
         self.window_step = window_step
         self.duration_scale = trial_duration_pts / 600.0
+        self.cand_dropout = cand_dropout
 
         # Load EEG data
         data = torch.load(self.eeg_dir / f"{split}_eeg.pt", weights_only=True)
@@ -237,8 +239,13 @@ class CandidateStage1Dataset(Dataset):
             input_ids.extend([self.bci_pad_id] * n)
             labels.extend([-100] * n)
 
-            # FBCCA candidates: [rank1][tXX] [rank2][tYY] [rank3][tZZ]
+            # Candidate dropout: replace with random noise to prevent shortcut learning
             top3_idx, top3_sc = fbcca_candidates[i]
+            if self.cand_dropout > 0 and random.random() < self.cand_dropout:
+                top3_idx = random.sample(range(40), 3)
+                top3_sc = [0.0, 0.0, 0.0]
+
+            # Decoder candidates: [rank1][tXX] [rank2][tYY] [rank3][tZZ]
             for rank_j in range(3):
                 input_ids.append(self.rank_ids[rank_j])
                 labels.append(-100)
@@ -308,6 +315,7 @@ class CandidateStage2Dataset(Dataset):
         word_vocab=None,
         trial_duration_pts=600,
         decoder_type="fbcca",
+        cand_dropout=0.0,
     ):
         self.eeg_dir = Path(eeg_dir)
         self.tokenizer = tokenizer
@@ -318,6 +326,7 @@ class CandidateStage2Dataset(Dataset):
         self.window_step = window_step
         self.split = split
         self.duration_scale = trial_duration_pts / 600.0
+        self.cand_dropout = cand_dropout
 
         # Word vocabulary (custom or built-in)
         self.vocab = word_vocab if word_vocab is not None else WordVocab()
@@ -568,8 +577,13 @@ class CandidateStage2Dataset(Dataset):
             input_ids.extend([self.bci_pad_id] * n)
             labels.extend([-100] * n)
 
-            # FBCCA candidates
+            # Candidate dropout: replace with random noise to prevent shortcut learning
             top3_idx, top3_sc = fbcca_candidates[i]
+            if self.cand_dropout > 0 and random.random() < self.cand_dropout:
+                top3_idx = random.sample(range(40), 3)
+                top3_sc = [0.0, 0.0, 0.0]
+
+            # Decoder candidates
             for rank_j in range(3):
                 input_ids.append(self.rank_ids[rank_j])
                 labels.append(-100)

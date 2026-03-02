@@ -152,6 +152,8 @@ def run_stage1_training(
     exclude_subjects=None,
     # Decoder type for candidate mode
     decoder_type="fbcca",
+    # Candidate dropout (0.0 = off, 0.3 = 30% random candidates)
+    cand_dropout=0.0,
     # DeepSpeed
     deepspeed_config="configs/ds_zero2.json",
 ):
@@ -187,7 +189,7 @@ def run_stage1_training(
     print("\nLoading datasets...")
     if fbcca_mode == "candidate":
         DatasetClass = CandidateStage1Dataset
-        extra_kwargs = {"decoder_type": decoder_type}
+        extra_kwargs = {"decoder_type": decoder_type, "cand_dropout": cand_dropout}
     else:
         DatasetClass = BCIAgentStage1Dataset
         extra_kwargs = {}
@@ -207,7 +209,7 @@ def run_stage1_training(
         window_size=effective_window_size, window_step=window_step,
         exclude_subjects=exclude_subjects,
         trial_duration_pts=trial_duration_pts,
-        **extra_kwargs,
+        **{k: v for k, v in extra_kwargs.items() if k != "cand_dropout"},
     )
     collator = BCIAgentCollator(tokenizer)
 
@@ -326,6 +328,8 @@ def run_stage2_training(
     exclude_subjects=None,
     # Decoder type for candidate mode
     decoder_type="fbcca",
+    # Candidate dropout (0.0 = off, 0.3 = 30% random candidates)
+    cand_dropout=0.0,
     # DeepSpeed
     deepspeed_config="configs/ds_zero2.json",
 ):
@@ -370,7 +374,8 @@ def run_stage2_training(
         from .word_vocab import WordVocab
         word_vocab = WordVocab(word_vocab_path)
         DatasetClass = CandidateStage2Dataset
-        extra_kwargs = {"word_vocab": word_vocab, "decoder_type": decoder_type}
+        extra_kwargs = {"word_vocab": word_vocab, "decoder_type": decoder_type,
+                        "cand_dropout": cand_dropout}
     else:
         DatasetClass = BCIAgentStage2Dataset
         extra_kwargs = {}
@@ -396,7 +401,7 @@ def run_stage2_training(
         window_size=effective_window_size, window_step=window_step,
         exclude_subjects=exclude_subjects,
         trial_duration_pts=trial_duration_pts,
-        **extra_kwargs,
+        **{k: v for k, v in extra_kwargs.items() if k != "cand_dropout"},
     )
     collator = BCIAgentCollator(tokenizer)
 
