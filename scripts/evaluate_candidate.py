@@ -43,55 +43,68 @@ def load_model_for_inference(
     device="cuda",
     from_modelscope=True,
 ):
-    """Load a trained S2 model for inference."""
-    checkpoint_dir = Path(checkpoint_dir)
+    """Load a trained S2 model for inference.
 
-    # Build model with S2 architecture (LoRA), loading S1 encoder weights
+    Strategy:
+      1. Build base model (stage=1) — no LoRA, just Qwen + encoder
+      2. Load S1 encoder + embedding weights
+      3. Apply trained LoRA from S2 checkpoint via PeftModel.from_pretrained
+      4. Override encoder with S2 weights (further trained in stage 2)
+      5. Merge LoRA for faster inference
+    """
+    from peft import PeftModel as PeftModelClass
+
+    checkpoint_dir = Path(checkpoint_dir)
+    s1_dir = Path(s1_checkpoint)
+
+    # Step 1: Build base model (stage=1 = no LoRA)
     model, tokenizer = build_bci_agent_model(
         model_name=model_name,
         from_modelscope=from_modelscope,
         reve_dir=reve_dir,
-        stage=2,
-        stage1_checkpoint=s1_checkpoint,
+        stage=1,  # Base model without LoRA
         encoder_type=encoder_type,
         fbcca_mode=fbcca_mode,
         window_size=window_size,
     )
 
-    # Load S2 encoder weights (may have been further trained)
-    enc_path = checkpoint_dir / "encoder_trainable.pt"
+    # Step 2: Load S1 encoder weights
+    enc_path = s1_dir / "encoder_trainable.pt"
     if enc_path.exists():
         state_dict = torch.load(enc_path, map_location="cpu", weights_only=True)
-        missing, unexpected = model.encoder.load_state_dict(state_dict, strict=False)
-        print(f"Loaded S2 encoder from {enc_path}")
-        if missing:
-            print(f"  Missing: {missing}")
+        model.encoder.load_state_dict(state_dict, strict=False)
+        print(f"Loaded S1 encoder from {enc_path}")
 
-    # Load S2 LoRA adapter
-    from peft import PeftModel
-    adapter_path = checkpoint_dir
-    if (adapter_path / "adapter_config.json").exists():
-        # The LoRA was already applied during build_bci_agent_model.
-        # We need to load the trained adapter weights.
-        # Since build already created a PeftModel with random LoRA,
-        # we load the trained weights on top.
-        lora_state = {}
-        for f in adapter_path.glob("adapter_model*"):
-            if f.suffix in (".bin", ".safetensors"):
-                if f.suffix == ".safetensors":
-                    from safetensors.torch import load_file
-                    lora_state.update(load_file(str(f)))
-                else:
-                    lora_state.update(torch.load(f, map_location="cpu", weights_only=True))
+    # Load S1 embedding weights
+    qwen_path = s1_dir / "qwen_trainable.pt"
+    if qwen_path.exists():
+        qwen_state = torch.load(qwen_path, map_location="cpu", weights_only=True)
+        ovs = model.original_vocab_size
+        if "embed_tokens.new_rows" in qwen_state:
+            model.qwen.get_input_embeddings().weight.data[ovs:] = qwen_state["embed_tokens.new_rows"]
+            print(f"  Restored {qwen_state['embed_tokens.new_rows'].shape[0]} new token embeddings")
+        if "lm_head.new_rows" in qwen_state:
+            model.qwen.lm_head.weight.data[ovs:] = qwen_state["lm_head.new_rows"]
+            print(f"  Restored lm_head new token rows")
 
-        if lora_state:
-            # Load LoRA + modules_to_save weights
-            missing, unexpected = model.qwen.load_state_dict(lora_state, strict=False)
-            print(f"Loaded S2 LoRA adapter ({len(lora_state)} keys)")
-
-        # Merge LoRA for faster inference
+    # Step 3: Apply trained LoRA from S2 checkpoint
+    if (checkpoint_dir / "adapter_config.json").exists():
+        print(f"Loading S2 LoRA from {checkpoint_dir}")
+        model.qwen = PeftModelClass.from_pretrained(
+            model.qwen, str(checkpoint_dir),
+        )
+        # Step 5: Merge LoRA for faster inference
         model.qwen = model.qwen.merge_and_unload()
-        print("Merged LoRA weights")
+        print("Merged LoRA weights into base model")
+    else:
+        print(f"WARNING: No adapter_config.json in {checkpoint_dir}")
+
+    # Step 4: Override encoder with S2 weights (if available)
+    s2_enc_path = checkpoint_dir / "encoder_trainable.pt"
+    if s2_enc_path.exists():
+        state_dict = torch.load(s2_enc_path, map_location="cpu", weights_only=True)
+        model.encoder.load_state_dict(state_dict, strict=False)
+        print(f"Loaded S2 encoder from {s2_enc_path}")
 
     model = model.to(device)
     model.eval()
