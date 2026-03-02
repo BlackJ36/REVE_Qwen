@@ -76,6 +76,7 @@ class BCIAgentStage1Dataset(Dataset):
         window_size=300,
         window_step=100,
         exclude_subjects=None,
+        trial_duration_pts=600,
     ):
         self.eeg_dir = Path(eeg_dir)
         self.tokenizer = tokenizer
@@ -89,7 +90,11 @@ class BCIAgentStage1Dataset(Dataset):
         if exclude_subjects:
             data, n_removed = _filter_by_subjects(data, exclude_subjects)
             print(f"[{split}] Excluded subjects {exclude_subjects}: removed {n_removed} trials")
-        self.eeg_data = data["eeg_data"]       # (N, 62, 600)
+        self.eeg_data = data["eeg_data"]       # (N, 62, total_T)
+
+        # Truncate EEG to requested duration
+        if trial_duration_pts < self.eeg_data.shape[2]:
+            self.eeg_data = self.eeg_data[:, :, :trial_duration_pts]
         self.labels = data["labels"]           # (N,)
         self.subject_ids = data["subject_ids"] # (N,)
         self.block_ids = data["block_ids"]     # (N,)
@@ -234,6 +239,7 @@ class BCIAgentStage2Dataset(Dataset):
         window_size=300,
         window_step=100,
         exclude_subjects=None,
+        trial_duration_pts=600,
     ):
         self.eeg_dir = Path(eeg_dir)
         self.tokenizer = tokenizer
@@ -255,6 +261,10 @@ class BCIAgentStage2Dataset(Dataset):
             data, n_removed = _filter_by_subjects(data, exclude_subjects)
             print(f"[{split}] Excluded subjects {exclude_subjects}: removed {n_removed} trials")
         self.eeg_data = data["eeg_data"]
+
+        # Truncate EEG to requested duration
+        if trial_duration_pts < self.eeg_data.shape[2]:
+            self.eeg_data = self.eeg_data[:, :, :trial_duration_pts]
         self.labels = data["labels"]
         self.subject_ids = data["subject_ids"]
         self.block_ids = data["block_ids"]

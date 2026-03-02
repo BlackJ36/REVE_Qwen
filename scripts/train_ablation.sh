@@ -2,11 +2,12 @@
 # Ablation study: 5 encoder configurations × 2 stages
 #
 # Usage:
-#   bash scripts/train_ablation.sh s1 [experiment]   # Stage 1 only
-#   bash scripts/train_ablation.sh s2 [experiment]   # Stage 2 only (needs S1 checkpoint)
-#   bash scripts/train_ablation.sh all [experiment]   # Stage 1 → Stage 2
+#   bash scripts/train_ablation.sh s1 [experiment] [duration]   # Stage 1 only
+#   bash scripts/train_ablation.sh s2 [experiment] [duration]   # Stage 2 only (needs S1 checkpoint)
+#   bash scripts/train_ablation.sh all [experiment] [duration]   # Stage 1 → Stage 2
 #
 # experiment: reve_fbcca | reve_candidate | reve_only | labram_fbcca | labram_only | all (default)
+# duration: trial duration in seconds (default: 3.0). E.g. 1.0, 1.5, 2.0, 3.0
 #
 # GPU selection:
 #   CUDA_VISIBLE_DEVICES=2,3 bash scripts/train_ablation.sh s1 reve_fbcca
@@ -63,6 +64,9 @@ echo ""
 
 STAGE=${1:-all}
 EXPERIMENT=${2:-all}
+DURATION=${3:-3.0}
+
+echo "Duration:    ${DURATION}s"
 
 CONFIGS=(
     "reve_fbcca:reve:--fbcca_mode film"
@@ -109,6 +113,7 @@ run_stage1() {
         --max_spells 10 \
         --window_size 300 \
         --window_step 100 \
+        --trial_duration "$DURATION" \
         --deepspeed configs/ds_zero2.json
 }
 
@@ -152,6 +157,7 @@ run_stage2() {
         --max_spells 8 \
         --window_size 300 \
         --window_step 100 \
+        --trial_duration "$DURATION" \
         --deepspeed configs/ds_zero2.json
 }
 

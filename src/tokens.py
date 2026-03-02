@@ -63,3 +63,21 @@ def score_gap_to_conf_token(top1_score, top2_score):
         return CONF_MID
     else:
         return CONF_LOW
+
+
+def score_gap_to_conf_token_adaptive(top1_score, top2_score, duration_scale=1.0):
+    """Duration-adaptive confidence threshold.
+
+    Shorter trials produce smaller FBCCA score gaps due to lower frequency
+    resolution. Scale thresholds proportionally so confidence remains calibrated.
+
+    Args:
+        duration_scale: trial_duration_pts / 600.0 (1.0 for 3s, 0.5 for 1.5s, etc.)
+    """
+    gap = top1_score - top2_score
+    if gap > 0.16 * duration_scale:
+        return CONF_HIGH
+    elif gap > 0.08 * duration_scale:
+        return CONF_MID
+    else:
+        return CONF_LOW

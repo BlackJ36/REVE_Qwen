@@ -146,6 +146,8 @@ def run_stage1_training(
     window_size=300,
     window_step=100,
     num_eeg_tokens=62,
+    # Variable duration
+    trial_duration_pts=600,
     # Data quality
     exclude_subjects=None,
     # DeepSpeed
@@ -164,6 +166,11 @@ def run_stage1_training(
     if fbcca_mode is None:
         fbcca_mode = "film" if use_fbcca else "none"
 
+    # Clamp window_size to trial duration
+    effective_window_size = min(window_size, trial_duration_pts)
+    if effective_window_size != window_size:
+        print(f"  window_size clamped: {window_size} -> {effective_window_size} (trial={trial_duration_pts}pts)")
+
     print(f"\nBuilding model (Stage 1, encoder={encoder_type}, fbcca_mode={fbcca_mode})...")
     model, tokenizer = build_bci_agent_model(
         model_name=model_name,
@@ -172,7 +179,7 @@ def run_stage1_training(
         stage=1,
         encoder_type=encoder_type,
         fbcca_mode=fbcca_mode,
-        window_size=window_size,
+        window_size=effective_window_size,
     )
 
     print("\nLoading datasets...")
@@ -181,15 +188,17 @@ def run_stage1_training(
         eeg_dir, tokenizer, split="train",
         num_eeg_tokens=num_eeg_tokens,
         min_spells=min_spells, max_spells=max_spells,
-        window_size=window_size, window_step=window_step,
+        window_size=effective_window_size, window_step=window_step,
         exclude_subjects=exclude_subjects,
+        trial_duration_pts=trial_duration_pts,
     )
     val_dataset = DatasetClass(
         eeg_dir, tokenizer, split="val",
         num_eeg_tokens=num_eeg_tokens,
         min_spells=min_spells, max_spells=max_spells,
-        window_size=window_size, window_step=window_step,
+        window_size=effective_window_size, window_step=window_step,
         exclude_subjects=exclude_subjects,
+        trial_duration_pts=trial_duration_pts,
     )
     collator = BCIAgentCollator(tokenizer)
 
@@ -302,6 +311,8 @@ def run_stage2_training(
     window_size=300,
     window_step=100,
     num_eeg_tokens=62,
+    # Variable duration
+    trial_duration_pts=600,
     # Data quality
     exclude_subjects=None,
     # DeepSpeed
@@ -322,6 +333,11 @@ def run_stage2_training(
     if stage1_checkpoint is None:
         print("WARNING: No Stage 1 checkpoint specified. Training encoder from scratch.")
 
+    # Clamp window_size to trial duration
+    effective_window_size = min(window_size, trial_duration_pts)
+    if effective_window_size != window_size:
+        print(f"  window_size clamped: {window_size} -> {effective_window_size} (trial={trial_duration_pts}pts)")
+
     print(f"\nBuilding model (Stage 2, encoder={encoder_type}, fbcca_mode={fbcca_mode})...")
     model, tokenizer = build_bci_agent_model(
         model_name=model_name,
@@ -334,7 +350,7 @@ def run_stage2_training(
         lora_rank=lora_rank,
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
-        window_size=window_size,
+        window_size=effective_window_size,
     )
 
     # Build word vocab for candidate mode
@@ -355,8 +371,9 @@ def run_stage2_training(
         weights=type_weights,
         num_eeg_tokens=num_eeg_tokens,
         min_spells=min_spells, max_spells=max_spells,
-        window_size=window_size, window_step=window_step,
+        window_size=effective_window_size, window_step=window_step,
         exclude_subjects=exclude_subjects,
+        trial_duration_pts=trial_duration_pts,
         **extra_kwargs,
     )
     val_dataset = DatasetClass(
@@ -365,8 +382,9 @@ def run_stage2_training(
         weights=type_weights,
         num_eeg_tokens=num_eeg_tokens,
         min_spells=min_spells, max_spells=max_spells,
-        window_size=window_size, window_step=window_step,
+        window_size=effective_window_size, window_step=window_step,
         exclude_subjects=exclude_subjects,
+        trial_duration_pts=trial_duration_pts,
         **extra_kwargs,
     )
     collator = BCIAgentCollator(tokenizer)

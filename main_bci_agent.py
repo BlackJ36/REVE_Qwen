@@ -71,6 +71,11 @@ def parse_args():
     parser.add_argument("--window_step", type=int, default=100)
     parser.add_argument("--num_eeg_tokens", type=int, default=62)
 
+    # Variable trial duration
+    parser.add_argument("--trial_duration", type=float, default=3.0,
+                        help="Trial duration in seconds (1.0/1.5/2.0/3.0). "
+                             "Shorter = faster spelling but lower accuracy.")
+
     # DeepSpeed
     parser.add_argument("--deepspeed", type=str, default="configs/ds_zero2.json")
     parser.add_argument("--local_rank", type=int, default=-1)
@@ -96,6 +101,9 @@ def main():
     fbcca_mode = args.fbcca_mode
     if fbcca_mode is None:
         fbcca_mode = "film" if args.use_fbcca else "none"
+
+    # Convert trial duration (seconds) to timepoints (@ 200Hz)
+    trial_duration_pts = int(args.trial_duration * 200)
 
     if args.stage == 1:
         batch_size = args.batch_size or 64
@@ -127,6 +135,7 @@ def main():
             window_size=args.window_size,
             window_step=args.window_step,
             num_eeg_tokens=args.num_eeg_tokens,
+            trial_duration_pts=trial_duration_pts,
             exclude_subjects=exclude_subjects,
             deepspeed_config=args.deepspeed,
         )
@@ -167,6 +176,7 @@ def main():
             window_size=args.window_size,
             window_step=args.window_step,
             num_eeg_tokens=args.num_eeg_tokens,
+            trial_duration_pts=trial_duration_pts,
             exclude_subjects=exclude_subjects,
             deepspeed_config=args.deepspeed,
         )

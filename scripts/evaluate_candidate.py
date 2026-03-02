@@ -111,9 +111,16 @@ def load_model_for_inference(
     return model, tokenizer
 
 
-def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_size=8):
-    """Run evaluation on validation set and collect per-trial predictions."""
+def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_size=8,
+                   trial_duration=3.0):
+    """Run evaluation on validation set and collect per-trial predictions.
+
+    Args:
+        trial_duration: trial duration in seconds (affects EEG truncation and FBCCA file).
+    """
     exclude_subjects = BETA_BAD_SUBJECTS if exclude_bad else None
+    trial_duration_pts = int(trial_duration * 200)
+    effective_window_size = min(300, trial_duration_pts)
 
     # Load dataset (single-spell for clean per-trial evaluation)
     dataset = CandidateStage1Dataset(
@@ -122,14 +129,28 @@ def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_si
         split="val",
         min_spells=1,
         max_spells=1,
-        window_size=300,
+        window_size=effective_window_size,
         window_step=100,
         exclude_subjects=exclude_subjects,
+        trial_duration_pts=trial_duration_pts,
     )
 
     # Load raw data for per-trial comparison
     data = torch.load(Path(eeg_dir) / "val_eeg.pt", weights_only=True)
-    fbcca_data = torch.load(Path(eeg_dir) / "val_fbcca.pt", weights_only=True)
+
+    # Load duration-aware FBCCA data
+    if trial_duration_pts == 600:
+        fbcca_filename = "val_fbcca.pt"
+    else:
+        fbcca_filename = f"val_fbcca_{trial_duration_pts}pt.pt"
+    fbcca_path = Path(eeg_dir) / fbcca_filename
+    if not fbcca_path.exists():
+        raise FileNotFoundError(
+            f"Precomputed FBCCA not found: {fbcca_path}\n"
+            f"Run: python scripts/precompute_fbcca.py --eeg_dir {eeg_dir} "
+            f"--trial_duration {trial_duration}"
+        )
+    fbcca_data = torch.load(fbcca_path, weights_only=True)
 
     if exclude_bad:
         mask = torch.ones(len(data["labels"]), dtype=torch.bool)
@@ -148,7 +169,7 @@ def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_si
         fbcca_scores = fbcca_data["top3_scores"]
 
     N = len(labels)
-    print(f"\nEvaluating {N} trials...")
+    print(f"\nEvaluating {N} trials (duration={trial_duration}s, {trial_duration_pts}pts)...")
 
     # Get target token IDs
     target_token_ids = {
@@ -171,7 +192,7 @@ def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_si
             label = int(labels[trial_idx])
             offset_idx = 0
             offset = dataset.window_offsets[offset_idx]
-            window = eeg_data[trial_idx, :, offset:offset + 300]
+            window = eeg_data[trial_idx, :, offset:offset + effective_window_size]
 
             top3_idx = fbcca_indices[trial_idx, offset_idx].tolist()
             top3_sc = fbcca_scores[trial_idx, offset_idx].tolist()
@@ -324,6 +345,23 @@ def print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids
         print(f"  {i:3d}   {true_char:>4}   {model_char:>5}   {fbcca_char:>5}   {conf:>5.2f}   {result:>7}")
 
 
+def print_duration_summary(results_by_duration):
+    """Print a comparison table across multiple trial durations."""
+    print("\n" + "=" * 80)
+    print("MULTI-DURATION COMPARISON")
+    print("=" * 80)
+    print(f"{'Duration':>10} | {'FBCCA Acc':>10} | {'Model Acc':>10} | "
+          f"{'Correction':>10} | {'Trust':>10} | {'Top-5':>10}")
+    print("-" * 80)
+
+    for dur, res in sorted(results_by_duration.items()):
+        print(f"  {dur:5.1f}s   | {res['fbcca_acc']:>9.1%} | {res['model_acc']:>9.1%} | "
+              f"{res['correction_rate']:>9.1%} | {res['trust_rate']:>9.1%} | "
+              f"{res['top5_acc']:>9.1%}")
+
+    print("=" * 80)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Offline evaluation of candidate-mode BCI agent")
     parser.add_argument("--checkpoint", type=str, required=True,
@@ -341,6 +379,10 @@ def main():
     parser.add_argument("--no_modelscope", action="store_true",
                         help="Download from HuggingFace instead of ModelScope")
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--trial_duration", type=float, default=3.0,
+                        help="Trial duration in seconds (default: 3.0)")
+    parser.add_argument("--durations", type=float, nargs="*",
+                        help="Evaluate multiple durations and print comparison table")
     args = parser.parse_args()
     if args.no_modelscope:
         args.from_modelscope = False
@@ -358,28 +400,68 @@ def main():
         from_modelscope=args.from_modelscope,
     )
 
-    print("Running evaluation...")
-    model_preds, model_probs, true_labels, fbcca_top1, subject_ids = run_evaluation(
-        model, tokenizer,
-        eeg_dir=args.eeg_dir,
-        device=device,
-        exclude_bad=not args.no_exclude_bad,
-        batch_size=args.batch_size,
-    )
+    # Determine durations to evaluate
+    durations = args.durations if args.durations else [args.trial_duration]
 
-    print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids)
+    if len(durations) > 1:
+        # Multi-duration comparison mode
+        results_by_duration = {}
+        for dur in durations:
+            print(f"\n{'='*60}")
+            print(f"Evaluating duration: {dur}s ({int(dur*200)}pts)")
+            print(f"{'='*60}")
 
-    # Save predictions
-    out_path = Path(args.checkpoint) / "eval_predictions.npz"
-    np.savez(
-        out_path,
-        model_preds=model_preds,
-        model_probs=model_probs,
-        true_labels=true_labels,
-        fbcca_top1=fbcca_top1,
-        subject_ids=subject_ids,
-    )
-    print(f"\nPredictions saved to {out_path}")
+            model_preds, model_probs, true_labels, fbcca_top1, subject_ids = run_evaluation(
+                model, tokenizer,
+                eeg_dir=args.eeg_dir,
+                device=device,
+                exclude_bad=not args.no_exclude_bad,
+                batch_size=args.batch_size,
+                trial_duration=dur,
+            )
+
+            correction = compute_fbcca_correction_metrics(model_preds, true_labels, fbcca_top1)
+            top5_preds = np.argsort(-model_probs, axis=1)[:, :5]
+            top5_acc = np.any(top5_preds == true_labels[:, None], axis=1).mean()
+
+            results_by_duration[dur] = {
+                **correction,
+                "top5_acc": float(top5_acc),
+            }
+
+            # Brief per-duration summary
+            print(f"  FBCCA: {correction['fbcca_acc']:.1%}, "
+                  f"Model: {correction['model_acc']:.1%}, "
+                  f"Top-5: {top5_acc:.1%}")
+
+        print_duration_summary(results_by_duration)
+    else:
+        # Single-duration mode (full output)
+        dur = durations[0]
+        print("Running evaluation...")
+        model_preds, model_probs, true_labels, fbcca_top1, subject_ids = run_evaluation(
+            model, tokenizer,
+            eeg_dir=args.eeg_dir,
+            device=device,
+            exclude_bad=not args.no_exclude_bad,
+            batch_size=args.batch_size,
+            trial_duration=dur,
+        )
+
+        print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids)
+
+        # Save predictions
+        suffix = "" if dur == 3.0 else f"_{int(dur*200)}pt"
+        out_path = Path(args.checkpoint) / f"eval_predictions{suffix}.npz"
+        np.savez(
+            out_path,
+            model_preds=model_preds,
+            model_probs=model_probs,
+            true_labels=true_labels,
+            fbcca_top1=fbcca_top1,
+            subject_ids=subject_ids,
+        )
+        print(f"\nPredictions saved to {out_path}")
 
 
 if __name__ == "__main__":

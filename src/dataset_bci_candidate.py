@@ -35,6 +35,7 @@ from .tokens import (
     RANK3,
     TARGET_INDEX_TO_TOKEN,
     score_gap_to_conf_token,
+    score_gap_to_conf_token_adaptive,
 )
 from .word_vocab import WordVocab, generate_random_sequence, sample_word, word_to_labels
 
@@ -66,6 +67,7 @@ class CandidateStage1Dataset(Dataset):
         window_size=300,
         window_step=100,
         exclude_subjects=None,
+        trial_duration_pts=600,
     ):
         self.eeg_dir = Path(eeg_dir)
         self.tokenizer = tokenizer
@@ -74,24 +76,34 @@ class CandidateStage1Dataset(Dataset):
         self.max_spells = max_spells
         self.window_size = window_size
         self.window_step = window_step
+        self.duration_scale = trial_duration_pts / 600.0
 
         # Load EEG data
         data = torch.load(self.eeg_dir / f"{split}_eeg.pt", weights_only=True)
         if exclude_subjects:
             data, n_removed = _filter_by_subjects(data, exclude_subjects)
             print(f"[{split}] Excluded subjects {exclude_subjects}: removed {n_removed} trials")
-        self.eeg_data = data["eeg_data"]       # (N, 62, 600)
+        self.eeg_data = data["eeg_data"]       # (N, 62, total_T)
         self.labels = data["labels"]           # (N,)
         self.subject_ids = data["subject_ids"]
         self.block_ids = data["block_ids"]
         N = len(self.labels)
 
-        # Load precomputed FBCCA
-        fbcca_path = self.eeg_dir / f"{split}_fbcca.pt"
+        # Truncate EEG to requested duration
+        if trial_duration_pts < self.eeg_data.shape[2]:
+            self.eeg_data = self.eeg_data[:, :, :trial_duration_pts]
+
+        # Load precomputed FBCCA (duration-aware filename)
+        if trial_duration_pts == 600:
+            fbcca_filename = f"{split}_fbcca.pt"
+        else:
+            fbcca_filename = f"{split}_fbcca_{trial_duration_pts}pt.pt"
+        fbcca_path = self.eeg_dir / fbcca_filename
         if not fbcca_path.exists():
             raise FileNotFoundError(
                 f"Precomputed FBCCA not found: {fbcca_path}\n"
-                f"Run: python scripts/precompute_fbcca.py --eeg_dir {self.eeg_dir}"
+                f"Run: python scripts/precompute_fbcca.py --eeg_dir {self.eeg_dir} "
+                f"--trial_duration {trial_duration_pts / 200.0}"
             )
         fbcca_data = torch.load(fbcca_path, weights_only=True)
         self.fbcca_top3_indices = fbcca_data["top3_indices"]  # (N_full, num_offsets, 3)
@@ -225,8 +237,9 @@ class CandidateStage1Dataset(Dataset):
                 input_ids.append(self.target_ids[top3_idx[rank_j]])
                 labels.append(-100)
 
-            # Confidence token
-            conf_token = score_gap_to_conf_token(top3_sc[0], top3_sc[1])
+            # Confidence token (duration-adaptive)
+            conf_token = score_gap_to_conf_token_adaptive(
+                top3_sc[0], top3_sc[1], self.duration_scale)
             input_ids.append(self.conf_ids[conf_token])
             labels.append(-100)
 
@@ -284,6 +297,7 @@ class CandidateStage2Dataset(Dataset):
         window_step=100,
         exclude_subjects=None,
         word_vocab=None,
+        trial_duration_pts=600,
     ):
         self.eeg_dir = Path(eeg_dir)
         self.tokenizer = tokenizer
@@ -293,6 +307,7 @@ class CandidateStage2Dataset(Dataset):
         self.window_size = window_size
         self.window_step = window_step
         self.split = split
+        self.duration_scale = trial_duration_pts / 600.0
 
         # Word vocabulary (custom or built-in)
         self.vocab = word_vocab if word_vocab is not None else WordVocab()
@@ -313,12 +328,21 @@ class CandidateStage2Dataset(Dataset):
         self.block_ids = data["block_ids"]
         N = len(self.labels)
 
-        # Load precomputed FBCCA
-        fbcca_path = self.eeg_dir / f"{split}_fbcca.pt"
+        # Truncate EEG to requested duration
+        if trial_duration_pts < self.eeg_data.shape[2]:
+            self.eeg_data = self.eeg_data[:, :, :trial_duration_pts]
+
+        # Load precomputed FBCCA (duration-aware filename)
+        if trial_duration_pts == 600:
+            fbcca_filename = f"{split}_fbcca.pt"
+        else:
+            fbcca_filename = f"{split}_fbcca_{trial_duration_pts}pt.pt"
+        fbcca_path = self.eeg_dir / fbcca_filename
         if not fbcca_path.exists():
             raise FileNotFoundError(
                 f"Precomputed FBCCA not found: {fbcca_path}\n"
-                f"Run: python scripts/precompute_fbcca.py --eeg_dir {self.eeg_dir}"
+                f"Run: python scripts/precompute_fbcca.py --eeg_dir {self.eeg_dir} "
+                f"--trial_duration {trial_duration_pts / 200.0}"
             )
         fbcca_data = torch.load(fbcca_path, weights_only=True)
         self.fbcca_top3_indices = fbcca_data["top3_indices"]
@@ -537,8 +561,9 @@ class CandidateStage2Dataset(Dataset):
                 input_ids.append(self.target_ids[top3_idx[rank_j]])
                 labels.append(-100)
 
-            # Confidence
-            conf_token = score_gap_to_conf_token(top3_sc[0], top3_sc[1])
+            # Confidence (duration-adaptive)
+            conf_token = score_gap_to_conf_token_adaptive(
+                top3_sc[0], top3_sc[1], self.duration_scale)
             input_ids.append(self.conf_ids[conf_token])
             labels.append(-100)
 
