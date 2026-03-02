@@ -47,18 +47,24 @@ auto_accum() {
 S1_BS=${S1_BS:-16}
 S1_ACCUM=$(auto_accum $S1_BS)
 S1_EPOCHS=${S1_EPOCHS:-15}
+S1_LR=${S1_LR:-5e-4}
+S1_ENC_LR=${S1_ENC_LR:-1e-3}
 
 # Stage 2: micro_bs=8 (LoRA uses more memory)
 S2_BS=${S2_BS:-8}
 S2_ACCUM=$(auto_accum $S2_BS)
 S2_EPOCHS=${S2_EPOCHS:-10}
+S2_LR=${S2_LR:-2e-5}
+S2_ENC_LR=${S2_ENC_LR:-5e-4}
+S2_LORA_RANK=${S2_LORA_RANK:-32}
+S2_LORA_ALPHA=${S2_LORA_ALPHA:-64}
 
 # --- Print config ---
 echo "=== Ablation Config ==="
 echo "GPUs:        ${NUM_GPUS}"
 echo "Target batch: ${TARGET_BATCH}"
-echo "Stage 1:     bs=${S1_BS} × accum=${S1_ACCUM} × ${NUM_GPUS}gpu = $((S1_BS * S1_ACCUM * NUM_GPUS)) eff, ${S1_EPOCHS} epochs"
-echo "Stage 2:     bs=${S2_BS} × accum=${S2_ACCUM} × ${NUM_GPUS}gpu = $((S2_BS * S2_ACCUM * NUM_GPUS)) eff, ${S2_EPOCHS} epochs"
+echo "Stage 1:     bs=${S1_BS} × accum=${S1_ACCUM} × ${NUM_GPUS}gpu = $((S1_BS * S1_ACCUM * NUM_GPUS)) eff, ${S1_EPOCHS} epochs, lr=${S1_LR}, enc_lr=${S1_ENC_LR}"
+echo "Stage 2:     bs=${S2_BS} × accum=${S2_ACCUM} × ${NUM_GPUS}gpu = $((S2_BS * S2_ACCUM * NUM_GPUS)) eff, ${S2_EPOCHS} epochs, lr=${S2_LR}, enc_lr=${S2_ENC_LR}, rank=${S2_LORA_RANK}"
 echo "========================"
 echo ""
 
@@ -113,8 +119,8 @@ run_stage1() {
         --exclude_bad_subjects \
         --batch_size "$S1_BS" \
         --grad_accum "$S1_ACCUM" \
-        --lr 5e-4 \
-        --encoder_lr 1e-3 \
+        --lr "$S1_LR" \
+        --encoder_lr "$S1_ENC_LR" \
         --epochs "$S1_EPOCHS" \
         --warmup_ratio 0.1 \
         --min_spells 5 \
@@ -153,12 +159,12 @@ run_stage2() {
         $fbcca_flag \
         --exclude_bad_subjects \
         --stage1_checkpoint "$s1_ckpt" \
-        --lora_rank 32 \
-        --lora_alpha 64 \
+        --lora_rank "$S2_LORA_RANK" \
+        --lora_alpha "$S2_LORA_ALPHA" \
         --batch_size "$S2_BS" \
         --grad_accum "$S2_ACCUM" \
-        --lr 2e-5 \
-        --encoder_lr 5e-4 \
+        --lr "$S2_LR" \
+        --encoder_lr "$S2_ENC_LR" \
         --epochs "$S2_EPOCHS" \
         --warmup_ratio 0.1 \
         --min_spells 3 \
