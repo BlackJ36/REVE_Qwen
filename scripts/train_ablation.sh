@@ -6,7 +6,7 @@
 #   bash scripts/train_ablation.sh s2 [experiment] [duration]   # Stage 2 only (needs S1 checkpoint)
 #   bash scripts/train_ablation.sh all [experiment] [duration]   # Stage 1 → Stage 2
 #
-# experiment: reve_fbcca | reve_candidate | reve_only | labram_fbcca | labram_only | all (default)
+# experiment: reve_fbcca | reve_candidate | reve_etrca | reve_only | labram_fbcca | labram_only | all (default)
 # duration: trial duration in seconds (default: 3.0). E.g. 1.0, 1.5, 2.0, 3.0
 #
 # GPU selection:
@@ -70,7 +70,8 @@ echo "Duration:    ${DURATION}s"
 
 CONFIGS=(
     "reve_fbcca:reve:--fbcca_mode film"
-    "reve_candidate:reve:--fbcca_mode candidate"
+    "reve_candidate:reve:--fbcca_mode candidate --decoder_type fbcca"
+    "reve_etrca:reve:--fbcca_mode candidate --decoder_type etrca"
     "reve_only:reve:--fbcca_mode none"
     "labram_fbcca:labram:--fbcca_mode film"
     "labram_only:labram:--fbcca_mode none"
@@ -80,11 +81,18 @@ run_stage1() {
     local name=$1 encoder_type=$2 fbcca_flag=$3
     local output_dir="output_ablation_${name}_s1"
 
-    # Candidate mode requires precomputed FBCCA
+    # Candidate mode requires precomputed decoder predictions
     if [[ "$fbcca_flag" == *"candidate"* ]]; then
-        if [ ! -f "data/eeg_tensors/train_fbcca.pt" ]; then
-            echo "ERROR: Precomputed FBCCA not found for candidate mode."
-            echo "  Run: python scripts/precompute_fbcca.py --eeg_dir data/eeg_tensors"
+        if [[ "$fbcca_flag" == *"etrca"* ]]; then
+            local needed_file="data/eeg_tensors/train_etrca.pt"
+            local gen_cmd="python scripts/precompute_trca.py --eeg_dir data/eeg_tensors --ensemble"
+        else
+            local needed_file="data/eeg_tensors/train_fbcca.pt"
+            local gen_cmd="python scripts/precompute_fbcca.py --eeg_dir data/eeg_tensors"
+        fi
+        if [ ! -f "$needed_file" ]; then
+            echo "ERROR: Precomputed decoder data not found: ${needed_file}"
+            echo "  Run: ${gen_cmd}"
             return 1
         fi
     fi

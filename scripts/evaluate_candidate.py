@@ -112,11 +112,12 @@ def load_model_for_inference(
 
 
 def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_size=8,
-                   trial_duration=3.0):
+                   trial_duration=3.0, decoder_type="fbcca"):
     """Run evaluation on validation set and collect per-trial predictions.
 
     Args:
-        trial_duration: trial duration in seconds (affects EEG truncation and FBCCA file).
+        trial_duration: trial duration in seconds (affects EEG truncation and decoder file).
+        decoder_type: "fbcca", "trca", or "etrca" — which precomputed candidates to use.
     """
     exclude_subjects = BETA_BAD_SUBJECTS if exclude_bad else None
     trial_duration_pts = int(trial_duration * 200)
@@ -133,24 +134,24 @@ def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_si
         window_step=100,
         exclude_subjects=exclude_subjects,
         trial_duration_pts=trial_duration_pts,
+        decoder_type=decoder_type,
     )
 
     # Load raw data for per-trial comparison
     data = torch.load(Path(eeg_dir) / "val_eeg.pt", weights_only=True)
 
-    # Load duration-aware FBCCA data
+    # Load duration-aware decoder data
     if trial_duration_pts == 600:
-        fbcca_filename = "val_fbcca.pt"
+        cand_filename = f"val_{decoder_type}.pt"
     else:
-        fbcca_filename = f"val_fbcca_{trial_duration_pts}pt.pt"
-    fbcca_path = Path(eeg_dir) / fbcca_filename
-    if not fbcca_path.exists():
+        cand_filename = f"val_{decoder_type}_{trial_duration_pts}pt.pt"
+    cand_path = Path(eeg_dir) / cand_filename
+    if not cand_path.exists():
         raise FileNotFoundError(
-            f"Precomputed FBCCA not found: {fbcca_path}\n"
-            f"Run: python scripts/precompute_fbcca.py --eeg_dir {eeg_dir} "
-            f"--trial_duration {trial_duration}"
+            f"Precomputed {decoder_type} not found: {cand_path}\n"
+            f"Run the appropriate precompute script first."
         )
-    fbcca_data = torch.load(fbcca_path, weights_only=True)
+    fbcca_data = torch.load(cand_path, weights_only=True)
 
     if exclude_bad:
         mask = torch.ones(len(data["labels"]), dtype=torch.bool)
@@ -383,6 +384,9 @@ def main():
                         help="Trial duration in seconds (default: 3.0)")
     parser.add_argument("--durations", type=float, nargs="*",
                         help="Evaluate multiple durations and print comparison table")
+    parser.add_argument("--decoder_type", type=str, default="fbcca",
+                        choices=["fbcca", "trca", "etrca"],
+                        help="Decoder type for candidate predictions (default: fbcca)")
     args = parser.parse_args()
     if args.no_modelscope:
         args.from_modelscope = False
@@ -418,6 +422,7 @@ def main():
                 exclude_bad=not args.no_exclude_bad,
                 batch_size=args.batch_size,
                 trial_duration=dur,
+                decoder_type=args.decoder_type,
             )
 
             correction = compute_fbcca_correction_metrics(model_preds, true_labels, fbcca_top1)

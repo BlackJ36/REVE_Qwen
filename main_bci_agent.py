@@ -28,6 +28,10 @@ def parse_args():
                         choices=["film", "candidate", "none"],
                         help="FBCCA integration: 'film' (FiLM modulation), "
                              "'candidate' (inject as tokens), 'none' (backbone-only)")
+    parser.add_argument("--decoder_type", type=str, default="fbcca",
+                        choices=["fbcca", "trca", "etrca"],
+                        help="Decoder type for candidate injection: 'fbcca', 'trca', or 'etrca' "
+                             "(only used when --fbcca_mode=candidate)")
     # Legacy flags (backward compat)
     parser.add_argument("--use_fbcca", action="store_true", default=True,
                         help="Enable FBCCA FiLM modulation (default: True). "
@@ -137,6 +141,7 @@ def main():
             num_eeg_tokens=args.num_eeg_tokens,
             trial_duration_pts=trial_duration_pts,
             exclude_subjects=exclude_subjects,
+            decoder_type=args.decoder_type,
             deepspeed_config=args.deepspeed,
         )
 
@@ -178,6 +183,7 @@ def main():
             num_eeg_tokens=args.num_eeg_tokens,
             trial_duration_pts=trial_duration_pts,
             exclude_subjects=exclude_subjects,
+            decoder_type=args.decoder_type,
             deepspeed_config=args.deepspeed,
         )
 

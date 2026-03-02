@@ -150,6 +150,8 @@ def run_stage1_training(
     trial_duration_pts=600,
     # Data quality
     exclude_subjects=None,
+    # Decoder type for candidate mode
+    decoder_type="fbcca",
     # DeepSpeed
     deepspeed_config="configs/ds_zero2.json",
 ):
@@ -183,7 +185,12 @@ def run_stage1_training(
     )
 
     print("\nLoading datasets...")
-    DatasetClass = CandidateStage1Dataset if fbcca_mode == "candidate" else BCIAgentStage1Dataset
+    if fbcca_mode == "candidate":
+        DatasetClass = CandidateStage1Dataset
+        extra_kwargs = {"decoder_type": decoder_type}
+    else:
+        DatasetClass = BCIAgentStage1Dataset
+        extra_kwargs = {}
     train_dataset = DatasetClass(
         eeg_dir, tokenizer, split="train",
         num_eeg_tokens=num_eeg_tokens,
@@ -191,6 +198,7 @@ def run_stage1_training(
         window_size=effective_window_size, window_step=window_step,
         exclude_subjects=exclude_subjects,
         trial_duration_pts=trial_duration_pts,
+        **extra_kwargs,
     )
     val_dataset = DatasetClass(
         eeg_dir, tokenizer, split="val",
@@ -199,6 +207,7 @@ def run_stage1_training(
         window_size=effective_window_size, window_step=window_step,
         exclude_subjects=exclude_subjects,
         trial_duration_pts=trial_duration_pts,
+        **extra_kwargs,
     )
     collator = BCIAgentCollator(tokenizer)
 
@@ -315,6 +324,8 @@ def run_stage2_training(
     trial_duration_pts=600,
     # Data quality
     exclude_subjects=None,
+    # Decoder type for candidate mode
+    decoder_type="fbcca",
     # DeepSpeed
     deepspeed_config="configs/ds_zero2.json",
 ):
@@ -359,12 +370,12 @@ def run_stage2_training(
         from .word_vocab import WordVocab
         word_vocab = WordVocab(word_vocab_path)
         DatasetClass = CandidateStage2Dataset
+        extra_kwargs = {"word_vocab": word_vocab, "decoder_type": decoder_type}
     else:
         DatasetClass = BCIAgentStage2Dataset
+        extra_kwargs = {}
 
     print("\nLoading datasets...")
-    # word_vocab is only used by CandidateStage2Dataset; BCIAgentStage2Dataset ignores it
-    extra_kwargs = {"word_vocab": word_vocab} if fbcca_mode == "candidate" else {}
     train_dataset = DatasetClass(
         eeg_dir, tokenizer, split="train",
         nl_data_path=nl_data_path,

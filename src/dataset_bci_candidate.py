@@ -1,7 +1,7 @@
-"""Dataset with FBCCA candidate injection for BCI agent training.
+"""Dataset with decoder candidate injection for BCI agent training.
 
 Stage 1: Same classification task as BCIAgentStage1Dataset, but each spell
-  includes FBCCA top-3 predictions as explicit context tokens.
+  includes decoder (FBCCA/TRCA/eTRCA) top-3 predictions as explicit context tokens.
 
 Stage 2: Word-level spelling — assembles multi-spell sequences that spell
   real words, using label→trial mapping to find matching EEG data.
@@ -9,9 +9,10 @@ Stage 2: Word-level spelling — assembles multi-spell sequences that spell
 Per-spell token format:
     [62×pad] <|rank1|><|tXX|> <|rank2|><|tYY|> <|rank3|><|tZZ|> <|conf_X|> <|tNN|> <|bci_trans|>
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^
-             FBCCA context (all -100 labels)                                  supervised
+             decoder context (all -100 labels)                                supervised
 
-Where tXX/tYY/tZZ are FBCCA's top-3 predictions and tNN is the true target.
+Where tXX/tYY/tZZ are decoder's top-3 predictions and tNN is the true target.
+Supported decoder types: fbcca, trca, etrca (set via decoder_type parameter).
 """
 
 import json
@@ -41,19 +42,20 @@ from .word_vocab import WordVocab, generate_random_sequence, sample_word, word_t
 
 
 class CandidateStage1Dataset(Dataset):
-    """Stage 1: multi-spell EEG classification with FBCCA candidate context.
+    """Stage 1: multi-spell EEG classification with decoder candidate context.
 
-    Same grouping/windowing as BCIAgentStage1Dataset, but inserts FBCCA top-3
+    Same grouping/windowing as BCIAgentStage1Dataset, but inserts decoder top-3
     candidate tokens between the EEG pads and the supervised target.
 
     Args:
-        eeg_dir: directory containing {split}_eeg.pt and {split}_fbcca.pt
+        eeg_dir: directory containing {split}_eeg.pt and {split}_{decoder_type}.pt
         tokenizer: Qwen tokenizer with BCI special tokens registered
         split: "train" or "val"
         num_eeg_tokens: EEG pad tokens per window (62)
         min_spells / max_spells: spells per sequence
         window_size / window_step: sliding window parameters
         exclude_subjects: set of subject IDs to exclude
+        decoder_type: "fbcca", "trca", or "etrca" (determines which precomputed file to load)
     """
 
     def __init__(
@@ -68,6 +70,7 @@ class CandidateStage1Dataset(Dataset):
         window_step=100,
         exclude_subjects=None,
         trial_duration_pts=600,
+        decoder_type="fbcca",
     ):
         self.eeg_dir = Path(eeg_dir)
         self.tokenizer = tokenizer
@@ -93,34 +96,39 @@ class CandidateStage1Dataset(Dataset):
         if trial_duration_pts < self.eeg_data.shape[2]:
             self.eeg_data = self.eeg_data[:, :, :trial_duration_pts]
 
-        # Load precomputed FBCCA (duration-aware filename)
+        # Load precomputed decoder candidates (duration-aware filename)
+        # Supports: fbcca, trca, etrca
+        self.decoder_type = decoder_type
         if trial_duration_pts == 600:
-            fbcca_filename = f"{split}_fbcca.pt"
+            cand_filename = f"{split}_{decoder_type}.pt"
         else:
-            fbcca_filename = f"{split}_fbcca_{trial_duration_pts}pt.pt"
-        fbcca_path = self.eeg_dir / fbcca_filename
-        if not fbcca_path.exists():
+            cand_filename = f"{split}_{decoder_type}_{trial_duration_pts}pt.pt"
+        cand_path = self.eeg_dir / cand_filename
+        if not cand_path.exists():
+            precompute_hint = {
+                "fbcca": f"python scripts/precompute_fbcca.py --eeg_dir {self.eeg_dir} --trial_duration {trial_duration_pts / 200.0}",
+                "trca":  f"python scripts/precompute_trca.py --eeg_dir {self.eeg_dir} --trial_duration {trial_duration_pts / 200.0}",
+                "etrca": f"python scripts/precompute_trca.py --eeg_dir {self.eeg_dir} --trial_duration {trial_duration_pts / 200.0} --ensemble",
+            }
             raise FileNotFoundError(
-                f"Precomputed FBCCA not found: {fbcca_path}\n"
-                f"Run: python scripts/precompute_fbcca.py --eeg_dir {self.eeg_dir} "
-                f"--trial_duration {trial_duration_pts / 200.0}"
+                f"Precomputed {decoder_type} not found: {cand_path}\n"
+                f"Run: {precompute_hint.get(decoder_type, 'unknown decoder_type')}"
             )
-        fbcca_data = torch.load(fbcca_path, weights_only=True)
-        self.fbcca_top3_indices = fbcca_data["top3_indices"]  # (N_full, num_offsets, 3)
-        self.fbcca_top3_scores = fbcca_data["top3_scores"]    # (N_full, num_offsets, 3)
+        cand_data = torch.load(cand_path, weights_only=True)
+        self.cand_top3_indices = cand_data["top3_indices"]  # (N_full, num_offsets, 3)
+        self.cand_top3_scores = cand_data["top3_scores"]    # (N_full, num_offsets, 3)
 
-        # If subjects were filtered, we need to filter FBCCA data too
+        # If subjects were filtered, we need to filter candidate data too
         if exclude_subjects:
-            # Rebuild mask on original data to filter FBCCA consistently
             orig_data = torch.load(self.eeg_dir / f"{split}_eeg.pt", weights_only=True)
             mask = torch.ones(len(orig_data["labels"]), dtype=torch.bool)
             for sid in exclude_subjects:
                 mask &= orig_data["subject_ids"] != sid
-            self.fbcca_top3_indices = self.fbcca_top3_indices[mask]
-            self.fbcca_top3_scores = self.fbcca_top3_scores[mask]
+            self.cand_top3_indices = self.cand_top3_indices[mask]
+            self.cand_top3_scores = self.cand_top3_scores[mask]
 
-        assert len(self.fbcca_top3_indices) == N, \
-            f"FBCCA data size mismatch: {len(self.fbcca_top3_indices)} vs {N} trials"
+        assert len(self.cand_top3_indices) == N, \
+            f"{decoder_type} data size mismatch: {len(self.cand_top3_indices)} vs {N} trials"
 
         # Sliding window offsets
         total_timepoints = self.eeg_data.shape[2]
@@ -197,8 +205,8 @@ class CandidateStage1Dataset(Dataset):
             eeg_windows.append(window)
 
             # Look up precomputed FBCCA for this trial + offset
-            top3_idx = self.fbcca_top3_indices[trial_idx, offset_idx].tolist()  # [3]
-            top3_sc = self.fbcca_top3_scores[trial_idx, offset_idx].tolist()    # [3]
+            top3_idx = self.cand_top3_indices[trial_idx, offset_idx].tolist()  # [3]
+            top3_sc = self.cand_top3_scores[trial_idx, offset_idx].tolist()    # [3]
             fbcca_candidates.append((top3_idx, top3_sc))
 
         eeg_windows = torch.stack(eeg_windows)  # (K, 62, window_size)
@@ -263,7 +271,7 @@ class CandidateStage1Dataset(Dataset):
 
 
 class CandidateStage2Dataset(Dataset):
-    """Stage 2: word-level spelling with FBCCA candidate injection.
+    """Stage 2: word-level spelling with decoder candidate injection.
 
     Samples from data types:
       - "word" (40%): spell a real word using EEG trials with matching labels
@@ -275,12 +283,12 @@ class CandidateStage2Dataset(Dataset):
     find trials with labels [7, 4, 11, 15] within the same subject+block.
 
     Args:
-        eeg_dir: directory with preprocessed EEG + precomputed FBCCA
+        eeg_dir: directory with preprocessed EEG + precomputed decoder candidates
         tokenizer: Qwen tokenizer with BCI special tokens registered
         split: "train" or "val"
         nl_data_path: path to pure NL JSONL file (optional)
         weights: dict of type weights
-        word_ratio: (deprecated, use weights instead)
+        decoder_type: "fbcca", "trca", or "etrca"
     """
 
     def __init__(
@@ -298,6 +306,7 @@ class CandidateStage2Dataset(Dataset):
         exclude_subjects=None,
         word_vocab=None,
         trial_duration_pts=600,
+        decoder_type="fbcca",
     ):
         self.eeg_dir = Path(eeg_dir)
         self.tokenizer = tokenizer
@@ -332,31 +341,36 @@ class CandidateStage2Dataset(Dataset):
         if trial_duration_pts < self.eeg_data.shape[2]:
             self.eeg_data = self.eeg_data[:, :, :trial_duration_pts]
 
-        # Load precomputed FBCCA (duration-aware filename)
+        # Load precomputed decoder candidates (duration-aware filename)
+        self.decoder_type = decoder_type
         if trial_duration_pts == 600:
-            fbcca_filename = f"{split}_fbcca.pt"
+            cand_filename = f"{split}_{decoder_type}.pt"
         else:
-            fbcca_filename = f"{split}_fbcca_{trial_duration_pts}pt.pt"
-        fbcca_path = self.eeg_dir / fbcca_filename
-        if not fbcca_path.exists():
+            cand_filename = f"{split}_{decoder_type}_{trial_duration_pts}pt.pt"
+        cand_path = self.eeg_dir / cand_filename
+        if not cand_path.exists():
+            precompute_hint = {
+                "fbcca": f"python scripts/precompute_fbcca.py --eeg_dir {self.eeg_dir} --trial_duration {trial_duration_pts / 200.0}",
+                "trca":  f"python scripts/precompute_trca.py --eeg_dir {self.eeg_dir} --trial_duration {trial_duration_pts / 200.0}",
+                "etrca": f"python scripts/precompute_trca.py --eeg_dir {self.eeg_dir} --trial_duration {trial_duration_pts / 200.0} --ensemble",
+            }
             raise FileNotFoundError(
-                f"Precomputed FBCCA not found: {fbcca_path}\n"
-                f"Run: python scripts/precompute_fbcca.py --eeg_dir {self.eeg_dir} "
-                f"--trial_duration {trial_duration_pts / 200.0}"
+                f"Precomputed {decoder_type} not found: {cand_path}\n"
+                f"Run: {precompute_hint.get(decoder_type, 'unknown decoder_type')}"
             )
-        fbcca_data = torch.load(fbcca_path, weights_only=True)
-        self.fbcca_top3_indices = fbcca_data["top3_indices"]
-        self.fbcca_top3_scores = fbcca_data["top3_scores"]
+        cand_data = torch.load(cand_path, weights_only=True)
+        self.cand_top3_indices = cand_data["top3_indices"]
+        self.cand_top3_scores = cand_data["top3_scores"]
 
         if exclude_subjects:
             orig_data = torch.load(self.eeg_dir / f"{split}_eeg.pt", weights_only=True)
             mask = torch.ones(len(orig_data["labels"]), dtype=torch.bool)
             for sid in exclude_subjects:
                 mask &= orig_data["subject_ids"] != sid
-            self.fbcca_top3_indices = self.fbcca_top3_indices[mask]
-            self.fbcca_top3_scores = self.fbcca_top3_scores[mask]
+            self.cand_top3_indices = self.cand_top3_indices[mask]
+            self.cand_top3_scores = self.cand_top3_scores[mask]
 
-        assert len(self.fbcca_top3_indices) == N
+        assert len(self.cand_top3_indices) == N
 
         # Sliding window offsets
         total_timepoints = self.eeg_data.shape[2]
@@ -445,8 +459,8 @@ class CandidateStage2Dataset(Dataset):
         offset_idx = random.randrange(len(self.window_offsets))
         offset = self.window_offsets[offset_idx]
         window = self.eeg_data[trial_idx, :, offset:offset + self.window_size]
-        top3_idx = self.fbcca_top3_indices[trial_idx, offset_idx].tolist()
-        top3_sc = self.fbcca_top3_scores[trial_idx, offset_idx].tolist()
+        top3_idx = self.cand_top3_indices[trial_idx, offset_idx].tolist()
+        top3_sc = self.cand_top3_scores[trial_idx, offset_idx].tolist()
         return window, (top3_idx, top3_sc)
 
     def _make_word_sequence(self):
