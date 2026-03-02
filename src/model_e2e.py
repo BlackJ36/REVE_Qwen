@@ -78,7 +78,13 @@ class REVEWithUnfreeze(nn.Module):
         """
         B = eeg_tensor.shape[0]
         reve = self.reve
-        pos = self.electrode_positions.unsqueeze(0).expand(B, -1, -1)  # (B, 62, 3)
+
+        # Align input dtype with REVE weights (frozen params stay float32
+        # even when DeepSpeed bf16 casts forward-pass tensors to bf16)
+        reve_dtype = next(reve.parameters()).dtype
+        eeg_tensor = eeg_tensor.to(dtype=reve_dtype)
+
+        pos = self.electrode_positions.unsqueeze(0).expand(B, -1, -1).to(dtype=reve_dtype)  # (B, 62, 3)
 
         # Bypass reve.forward() which hardcodes eeg.float() and
         # FourierEmb4D.add_time_patch uses .float(). Call submodules
