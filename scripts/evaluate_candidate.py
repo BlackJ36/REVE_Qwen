@@ -257,7 +257,8 @@ def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_si
     return model_preds, model_probs, true_labels, fbcca_top1, subject_ids_np
 
 
-def print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids):
+def print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids,
+                  decoder_name="FBCCA"):
     """Print comprehensive evaluation results."""
     N = len(true_labels)
 
@@ -267,12 +268,12 @@ def print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids
     print("OVERALL RESULTS")
     print("=" * 60)
     print(f"  Trials:           {N}")
-    print(f"  FBCCA accuracy:   {correction['fbcca_acc']:.1%}")
+    print(f"  {decoder_name} accuracy:   {correction['fbcca_acc']:.1%}")
     print(f"  Model accuracy:   {correction['model_acc']:.1%}")
-    print(f"  Override rate:    {correction['override_rate']:.1%}  (model disagrees with FBCCA)")
-    print(f"  Correction rate:  {correction['correction_rate']:.1%}  (FBCCA wrong -> model right)")
-    print(f"  Trust rate:       {correction['trust_rate']:.1%}  (FBCCA right -> model agrees)")
-    print(f"  FBCCA errors:     {correction['correction_count']}")
+    print(f"  Override rate:    {correction['override_rate']:.1%}  (model disagrees with {decoder_name})")
+    print(f"  Correction rate:  {correction['correction_rate']:.1%}  ({decoder_name} wrong -> model right)")
+    print(f"  Trust rate:       {correction['trust_rate']:.1%}  ({decoder_name} right -> model agrees)")
+    print(f"  {decoder_name} errors:     {correction['correction_count']}")
 
     # Top-5
     top5_preds = np.argsort(-model_probs, axis=1)[:, :5]
@@ -451,9 +452,11 @@ def main():
             exclude_bad=not args.no_exclude_bad,
             batch_size=args.batch_size,
             trial_duration=dur,
+            decoder_type=args.decoder_type,
         )
 
-        print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids)
+        print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids,
+                      decoder_name=args.decoder_type.upper())
 
         # Save predictions
         suffix = "" if dur == 3.0 else f"_{int(dur*200)}pt"
