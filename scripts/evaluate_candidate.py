@@ -284,7 +284,8 @@ def print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids
     print("\n" + "-" * 60)
     print("PER-SUBJECT BREAKDOWN")
     print("-" * 60)
-    print(f"{'Subject':>8} {'Trials':>7} {'FBCCA':>7} {'Model':>7} {'Corrn':>7} {'Trust':>7}")
+    dec_short = decoder_name[:6]
+    print(f"{'Subject':>8} {'Trials':>7} {dec_short:>7} {'Model':>7} {'Corrn':>7} {'Trust':>7}")
 
     unique_subjects = sorted(np.unique(subject_ids))
     for sid in unique_subjects:
@@ -335,7 +336,7 @@ def print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids
     print("\n" + "-" * 60)
     print("SAMPLE PREDICTIONS (first 20)")
     print("-" * 60)
-    print(f"{'#':>4} {'True':>5} {'Model':>6} {'FBCCA':>6} {'Conf':>6} {'Result':>8}")
+    print(f"{'#':>4} {'True':>5} {'Model':>6} {dec_short:>6} {'Conf':>6} {'Result':>8}")
     for i in range(min(20, N)):
         true_char = KEYBOARD_CHARS[true_labels[i]]
         model_char = KEYBOARD_CHARS[model_preds[i]] if 0 <= model_preds[i] < 40 else "?"
@@ -347,12 +348,13 @@ def print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids
         print(f"  {i:3d}   {true_char:>4}   {model_char:>5}   {fbcca_char:>5}   {conf:>5.2f}   {result:>7}")
 
 
-def print_duration_summary(results_by_duration):
+def print_duration_summary(results_by_duration, decoder_name="FBCCA"):
     """Print a comparison table across multiple trial durations."""
     print("\n" + "=" * 80)
     print("MULTI-DURATION COMPARISON")
     print("=" * 80)
-    print(f"{'Duration':>10} | {'FBCCA Acc':>10} | {'Model Acc':>10} | "
+    dec_header = f"{decoder_name} Acc"
+    print(f"{'Duration':>10} | {dec_header:>10} | {'Model Acc':>10} | "
           f"{'Correction':>10} | {'Trust':>10} | {'Top-5':>10}")
     print("-" * 80)
 
@@ -436,11 +438,12 @@ def main():
             }
 
             # Brief per-duration summary
-            print(f"  FBCCA: {correction['fbcca_acc']:.1%}, "
+            dec_name = args.decoder_type.upper()
+            print(f"  {dec_name}: {correction['fbcca_acc']:.1%}, "
                   f"Model: {correction['model_acc']:.1%}, "
                   f"Top-5: {top5_acc:.1%}")
 
-        print_duration_summary(results_by_duration)
+        print_duration_summary(results_by_duration, decoder_name=args.decoder_type.upper())
     else:
         # Single-duration mode (full output)
         dur = durations[0]
