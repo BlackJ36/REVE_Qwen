@@ -77,7 +77,7 @@ echo "Duration:    ${DURATION}s"
 CONFIGS=(
     "reve_fbcca:reve:--fbcca_mode film"
     "reve_candidate:reve:--fbcca_mode candidate --decoder_type fbcca"
-    "reve_etrca:reve:--fbcca_mode candidate --decoder_type etrca --cand_dropout 0.3"
+    "reve_etrca:reve:--fbcca_mode candidate --decoder_type etrca"
     "reve_only:reve:--fbcca_mode none"
     "labram_fbcca:labram:--fbcca_mode film"
     "labram_only:labram:--fbcca_mode none"
@@ -123,6 +123,7 @@ run_stage1() {
         --encoder_lr "$S1_ENC_LR" \
         --epochs "$S1_EPOCHS" \
         --warmup_ratio 0.1 \
+        --early_stopping_patience 5 \
         --min_spells 5 \
         --max_spells 10 \
         --window_size 300 \
@@ -167,6 +168,7 @@ run_stage2() {
         --encoder_lr "$S2_ENC_LR" \
         --epochs "$S2_EPOCHS" \
         --warmup_ratio 0.1 \
+        --early_stopping_patience 5 \
         --min_spells 3 \
         --max_spells 8 \
         --window_size 300 \

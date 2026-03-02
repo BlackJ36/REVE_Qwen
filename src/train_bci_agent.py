@@ -154,6 +154,8 @@ def run_stage1_training(
     decoder_type="fbcca",
     # Candidate dropout (0.0 = off, 0.3 = 30% random candidates)
     cand_dropout=0.0,
+    # Early stopping
+    early_stopping_patience=5,
     # DeepSpeed
     deepspeed_config="configs/ds_zero2.json",
 ):
@@ -250,9 +252,10 @@ def run_stage1_training(
     best_dir = Path(output_dir) / "best"
     best_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build evaluation metrics
+    # Build evaluation metrics (two_step for candidate mode)
     target_ids = get_target_token_ids(tokenizer)
-    compute_metrics, preprocess_logits = build_metrics_fn(target_ids)
+    use_two_step = (fbcca_mode == "candidate")
+    compute_metrics, preprocess_logits = build_metrics_fn(target_ids, two_step=use_two_step)
 
     trainer = BCIAgentTrainer(
         model=model,
@@ -264,7 +267,7 @@ def run_stage1_training(
         preprocess_logits_for_metrics=preprocess_logits,
         encoder_lr=encoder_lr,
         best_model_dir=str(best_dir),
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=early_stopping_patience)],
     )
 
     # Print parameter summary
@@ -330,6 +333,8 @@ def run_stage2_training(
     decoder_type="fbcca",
     # Candidate dropout (0.0 = off, 0.3 = 30% random candidates)
     cand_dropout=0.0,
+    # Early stopping
+    early_stopping_patience=5,
     # DeepSpeed
     deepspeed_config="configs/ds_zero2.json",
 ):
@@ -442,9 +447,10 @@ def run_stage2_training(
     best_dir = Path(output_dir) / "best"
     best_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build evaluation metrics
+    # Build evaluation metrics (two_step for candidate mode)
     target_ids = get_target_token_ids(tokenizer)
-    compute_metrics, preprocess_logits = build_metrics_fn(target_ids)
+    use_two_step = (fbcca_mode == "candidate")
+    compute_metrics, preprocess_logits = build_metrics_fn(target_ids, two_step=use_two_step)
 
     trainer = BCIAgentTrainer(
         model=model,
@@ -456,7 +462,7 @@ def run_stage2_training(
         preprocess_logits_for_metrics=preprocess_logits,
         encoder_lr=encoder_lr,
         best_model_dir=str(best_dir),
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=early_stopping_patience)],
     )
 
     # Print parameter summary

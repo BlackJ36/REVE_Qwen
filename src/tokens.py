@@ -6,6 +6,7 @@ BCI_END = "<|bci_end|>"
 BCI_SEP = "<|bci_sep|>"
 BCI_PAD = "<|bci_pad|>"
 BCI_TRANS = "<|bci_trans|>"
+BCI_PRED = "<|bci_pred|>"  # Two-step prediction: EEG-only supervised marker
 
 # FBCCA candidate rank markers (injected as explicit tokens per spell)
 RANK1 = "<|rank1|>"
@@ -19,7 +20,7 @@ CONF_LOW = "<|conf_low|>"   # gap <= 0.05
 
 CANDIDATE_TOKENS = [RANK1, RANK2, RANK3, CONF_HIGH, CONF_MID, CONF_LOW]
 
-CONTROL_TOKENS = [BCI_START, BCI_END, BCI_SEP, BCI_PAD, BCI_TRANS] + CANDIDATE_TOKENS
+CONTROL_TOKENS = [BCI_START, BCI_END, BCI_SEP, BCI_PAD, BCI_TRANS, BCI_PRED] + CANDIDATE_TOKENS
 
 # Target tokens: 40 SSVEP targets
 TARGET_TOKENS = [f"<|t{i:02d}|>" for i in range(1, 41)]

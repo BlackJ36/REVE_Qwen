@@ -6,12 +6,13 @@ Stage 1: Same classification task as BCIAgentStage1Dataset, but each spell
 Stage 2: Word-level spelling — assembles multi-spell sequences that spell
   real words, using label→trial mapping to find matching EEG data.
 
-Per-spell token format:
-    [62×pad] <|rank1|><|tXX|> <|rank2|><|tYY|> <|rank3|><|tZZ|> <|conf_X|> <|tNN|> <|bci_trans|>
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^
-             decoder context (all -100 labels)                                supervised
+Per-spell token format (two-step prediction):
+    [62×pad] <|bci_pred|> <|rank1|><|tXX|> ... <|rank3|><|tZZ|> <|conf_X|> <|tNN|> <|bci_trans|>
+             ^^^^^^^^^^^^                                                    ^^^^^
+             EEG-only supervised (logits[last_pad]→tid)                      Final supervised
 
-Where tXX/tYY/tZZ are decoder's top-3 predictions and tNN is the true target.
+Two supervision points per spell force the model to first decode from pure EEG
+(before seeing candidates), then refine with candidate context.
 Supported decoder types: fbcca, trca, etrca (set via decoder_type parameter).
 """
 
@@ -27,6 +28,7 @@ from .dataset_bci_agent import BETA_BAD_SUBJECTS, BCIAgentCollator, _filter_by_s
 from .templates_zh import KEYBOARD_CHARS, SYSTEM_PROMPT, SYSTEM_PROMPT_SPELLING
 from .tokens import (
     BCI_PAD,
+    BCI_PRED,
     BCI_TRANS,
     CONF_HIGH,
     CONF_LOW,
@@ -155,6 +157,7 @@ class CandidateStage1Dataset(Dataset):
 
         # Pre-tokenize special tokens
         self.bci_pad_id = tokenizer.convert_tokens_to_ids(BCI_PAD)
+        self.bci_pred_id = tokenizer.convert_tokens_to_ids(BCI_PRED)
         self.bci_trans_id = tokenizer.convert_tokens_to_ids(BCI_TRANS)
         self.rank_ids = [
             tokenizer.convert_tokens_to_ids(RANK1),
@@ -228,11 +231,14 @@ class CandidateStage1Dataset(Dataset):
         }
 
     def _build_sequence(self, target_indices, fbcca_candidates):
-        """Build token sequence with FBCCA candidate injection.
+        """Build token sequence with two-step prediction + FBCCA candidates.
 
         Format per spell:
-            [62×pad] [rank1][tXX] [rank2][tYY] [rank3][tZZ] [conf_X] [target] [trans]
-        Labels: -100 everywhere except target token positions.
+            [62×pad] <|bci_pred|> [rank1][tXX] [rank2][tYY] [rank3][tZZ] [conf_X] [target] [trans]
+
+        Labels (causal LM shift — logits[i] predicts labels[i+1]):
+            [-100]×62  [tid]       [-100]×7                              [-100]    [tid]    [-100]
+                       ^EEG-only prediction (logits[last_pad] → pure EEG) ^Final prediction
         """
         n = self.num_eeg_tokens
         K = len(target_indices)
@@ -241,9 +247,16 @@ class CandidateStage1Dataset(Dataset):
         labels = [-100] * len(input_ids)
 
         for i in range(K):
+            tid = self.target_ids[target_indices[i]]
+
             # EEG pad tokens
             input_ids.extend([self.bci_pad_id] * n)
             labels.extend([-100] * n)
+
+            # Two-step prediction marker: EEG-only supervised point
+            # logits[last_pad_pos] sees only EEG → must predict tid
+            input_ids.append(self.bci_pred_id)
+            labels.append(tid)
 
             # Candidate dropout: randomize indices but keep original scores,
             # so confidence token distribution stays realistic and model can't
@@ -268,8 +281,7 @@ class CandidateStage1Dataset(Dataset):
             input_ids.append(self.conf_ids[conf_token])
             labels.append(-100)
 
-            # True target (supervised)
-            tid = self.target_ids[target_indices[i]]
+            # True target (Final supervised point)
             input_ids.append(tid)
             labels.append(tid)
 
@@ -434,6 +446,7 @@ class CandidateStage2Dataset(Dataset):
 
         # Pre-tokenize
         self.bci_pad_id = tokenizer.convert_tokens_to_ids(BCI_PAD)
+        self.bci_pred_id = tokenizer.convert_tokens_to_ids(BCI_PRED)
         self.bci_trans_id = tokenizer.convert_tokens_to_ids(BCI_TRANS)
         self.rank_ids = [
             tokenizer.convert_tokens_to_ids(RANK1),
@@ -565,9 +578,9 @@ class CandidateStage2Dataset(Dataset):
         }
 
     def _build_spelling_sequence(self, word, target_indices, fbcca_candidates):
-        """Build multi-turn spelling sequence with candidate injection.
+        """Build multi-turn spelling sequence with two-step prediction + candidates.
 
-        Uses the same format as CandidateStage1Dataset._build_sequence
+        Same two-step format as CandidateStage1Dataset._build_sequence
         but wrapped in a streaming spelling chat template.
         """
         n = self.num_eeg_tokens
@@ -584,12 +597,18 @@ class CandidateStage2Dataset(Dataset):
         input_ids = self.tokenizer.encode(prefix_text, add_special_tokens=False)
         labels = [-100] * len(input_ids)
 
-        # Each spell: pads + FBCCA candidates + target + trans
+        # Each spell: pads + bci_pred + FBCCA candidates + target + trans
         spelled = ""
         for i in range(K):
+            tid = self.target_ids[target_indices[i]]
+
             # EEG pads
             input_ids.extend([self.bci_pad_id] * n)
             labels.extend([-100] * n)
+
+            # Two-step prediction marker: EEG-only supervised point
+            input_ids.append(self.bci_pred_id)
+            labels.append(tid)
 
             # Candidate dropout: randomize indices, keep scores
             top3_idx, top3_sc = fbcca_candidates[i]
@@ -612,8 +631,7 @@ class CandidateStage2Dataset(Dataset):
             input_ids.append(self.conf_ids[conf_token])
             labels.append(-100)
 
-            # True target (supervised)
-            tid = self.target_ids[target_indices[i]]
+            # True target (Final supervised point)
             input_ids.append(tid)
             labels.append(tid)
 

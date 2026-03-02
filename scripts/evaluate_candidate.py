@@ -181,8 +181,12 @@ def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_si
     target_id_tensor = torch.tensor(list(target_token_ids.values()), device=device)
 
     collator = BCIAgentCollator(tokenizer)
-    model_preds = []
-    model_probs = []
+    # Two-step: collect both EEG-only and Final predictions
+    eeg_only_preds = []
+    eeg_only_probs = []
+    final_preds = []
+    final_probs = []
+    two_step_detected = None  # Auto-detect from first batch
 
     # Process in batches
     for start_idx in range(0, N, batch_size):
@@ -234,32 +238,68 @@ def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_si
                     if label_row[pos].item() in target_id_to_label
                 ]
 
-                if target_positions:
+                # Auto-detect two-step mode from first trial
+                if two_step_detected is None:
+                    two_step_detected = len(target_positions) >= 2
+                    mode_str = "two-step" if two_step_detected else "single-step"
+                    print(f"  Detected {mode_str} mode ({len(target_positions)} target positions per trial)")
+
+                if two_step_detected and len(target_positions) >= 2:
+                    # EEG-only prediction (1st target position)
+                    pos_eeg = target_positions[0]
+                    eeg_logits = logits[i, pos_eeg - 1, target_id_tensor]
+                    eeg_p = F.softmax(eeg_logits, dim=0)
+                    eeg_only_preds.append(eeg_p.argmax().item())
+                    eeg_only_probs.append(eeg_p.cpu().float().numpy())
+
+                    # Final prediction (2nd target position)
+                    pos_final = target_positions[1]
+                    final_logits = logits[i, pos_final - 1, target_id_tensor]
+                    final_p = F.softmax(final_logits, dim=0)
+                    final_preds.append(final_p.argmax().item())
+                    final_probs.append(final_p.cpu().float().numpy())
+                elif target_positions:
+                    # Single-step fallback (backward compat)
                     pos = target_positions[0]
                     target_logits = logits[i, pos - 1, target_id_tensor]
                     probs = F.softmax(target_logits, dim=0)
-                    pred_label = probs.argmax().item()
-                    model_preds.append(pred_label)
-                    model_probs.append(probs.cpu().float().numpy())
+                    final_preds.append(probs.argmax().item())
+                    final_probs.append(probs.cpu().float().numpy())
+                    eeg_only_preds.append(-1)
+                    eeg_only_probs.append(np.zeros(40))
                 else:
-                    model_preds.append(-1)
-                    model_probs.append(np.zeros(40))
+                    final_preds.append(-1)
+                    final_probs.append(np.zeros(40))
+                    eeg_only_preds.append(-1)
+                    eeg_only_probs.append(np.zeros(40))
 
         if (start_idx // batch_size) % 50 == 0:
             print(f"  Processed {end_idx}/{N} trials...")
 
-    model_preds = np.array(model_preds)
-    model_probs = np.array(model_probs)
-    true_labels = labels.numpy()
+    true_labels_np = labels.numpy()
     fbcca_top1 = fbcca_indices[:, 0, 0].numpy()
     subject_ids_np = subject_ids.numpy()
 
-    return model_preds, model_probs, true_labels, fbcca_top1, subject_ids_np
+    return {
+        "eeg_only_preds": np.array(eeg_only_preds),
+        "eeg_only_probs": np.array(eeg_only_probs),
+        "final_preds": np.array(final_preds),
+        "final_probs": np.array(final_probs),
+        "true_labels": true_labels_np,
+        "fbcca_top1": fbcca_top1,
+        "subject_ids": subject_ids_np,
+        "two_step": bool(two_step_detected),
+    }
 
 
-def print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids,
-                  decoder_name="FBCCA"):
+def print_results(results, decoder_name="FBCCA"):
     """Print comprehensive evaluation results."""
+    model_preds = results["final_preds"]
+    model_probs = results["final_probs"]
+    true_labels = results["true_labels"]
+    fbcca_top1 = results["fbcca_top1"]
+    subject_ids = results["subject_ids"]
+    is_two_step = results["two_step"]
     N = len(true_labels)
 
     correction = compute_fbcca_correction_metrics(model_preds, true_labels, fbcca_top1)
@@ -269,7 +309,19 @@ def print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids
     print("=" * 60)
     print(f"  Trials:           {N}")
     print(f"  {decoder_name} accuracy:   {correction['fbcca_acc']:.1%}")
-    print(f"  Model accuracy:   {correction['model_acc']:.1%}")
+
+    # EEG-only accuracy (two-step mode)
+    if is_two_step:
+        eeg_preds = results["eeg_only_preds"]
+        valid_eeg = eeg_preds >= 0
+        if valid_eeg.sum() > 0:
+            eeg_acc = (eeg_preds[valid_eeg] == true_labels[valid_eeg]).mean()
+            eeg_top5 = np.argsort(-results["eeg_only_probs"][valid_eeg], axis=1)[:, :5]
+            eeg_top5_hit = np.any(eeg_top5 == true_labels[valid_eeg, None], axis=1).mean()
+            print(f"  EEG-only acc:     {eeg_acc:.1%}   (pure EEG decoding, no candidates)")
+            print(f"  EEG-only top-5:   {eeg_top5_hit:.1%}")
+
+    print(f"  Final model acc:  {correction['model_acc']:.1%}")
     print(f"  Override rate:    {correction['override_rate']:.1%}  (model disagrees with {decoder_name})")
     print(f"  Correction rate:  {correction['correction_rate']:.1%}  ({decoder_name} wrong -> model right)")
     print(f"  Trust rate:       {correction['trust_rate']:.1%}  ({decoder_name} right -> model agrees)")
@@ -278,14 +330,18 @@ def print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids
     # Top-5
     top5_preds = np.argsort(-model_probs, axis=1)[:, :5]
     top5_hit = np.any(top5_preds == true_labels[:, None], axis=1)
-    print(f"  Model top-5 acc:  {top5_hit.mean():.1%}")
+    print(f"  Final top-5 acc:  {top5_hit.mean():.1%}")
 
     # Per-subject breakdown
     print("\n" + "-" * 60)
     print("PER-SUBJECT BREAKDOWN")
     print("-" * 60)
     dec_short = decoder_name[:6]
-    print(f"{'Subject':>8} {'Trials':>7} {dec_short:>7} {'Model':>7} {'Corrn':>7} {'Trust':>7}")
+    header = f"{'Subject':>8} {'Trials':>7} {dec_short:>7}"
+    if is_two_step:
+        header += f" {'EEGonly':>7}"
+    header += f" {'Final':>7} {'Corrn':>7} {'Trust':>7}"
+    print(header)
 
     unique_subjects = sorted(np.unique(subject_ids))
     for sid in unique_subjects:
@@ -313,8 +369,14 @@ def print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids
         else:
             s_trust = float('nan')
 
-        print(f"  S{sid:02d}   {n:>6}  {s_fbcca_acc:>6.1%}  {s_model_acc:>6.1%}  "
-              f"{s_correction:>6.1%}  {s_trust:>6.1%}")
+        line = f"  S{sid:02d}   {n:>6}  {s_fbcca_acc:>6.1%}"
+        if is_two_step:
+            s_eeg = results["eeg_only_preds"][mask]
+            s_eeg_valid = s_eeg >= 0
+            s_eeg_acc = (s_eeg[s_eeg_valid] == s_labels[s_eeg_valid]).mean() if s_eeg_valid.sum() > 0 else float('nan')
+            line += f"  {s_eeg_acc:>6.1%}"
+        line += f"  {s_model_acc:>6.1%}  {s_correction:>6.1%}  {s_trust:>6.1%}"
+        print(line)
 
     # Per-class accuracy (worst 10)
     print("\n" + "-" * 60)
@@ -336,7 +398,10 @@ def print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids
     print("\n" + "-" * 60)
     print("SAMPLE PREDICTIONS (first 20)")
     print("-" * 60)
-    print(f"{'#':>4} {'True':>5} {'Model':>6} {dec_short:>6} {'Conf':>6} {'Result':>8}")
+    if is_two_step:
+        print(f"{'#':>4} {'True':>5} {'EEGonly':>7} {'Final':>6} {dec_short:>6} {'Conf':>6} {'Result':>8}")
+    else:
+        print(f"{'#':>4} {'True':>5} {'Model':>6} {dec_short:>6} {'Conf':>6} {'Result':>8}")
     for i in range(min(20, N)):
         true_char = KEYBOARD_CHARS[true_labels[i]]
         model_char = KEYBOARD_CHARS[model_preds[i]] if 0 <= model_preds[i] < 40 else "?"
@@ -345,25 +410,40 @@ def print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids
         result = "OK" if model_preds[i] == true_labels[i] else "MISS"
         if model_preds[i] == true_labels[i] and fbcca_top1[i] != true_labels[i]:
             result = "FIXED!"
-        print(f"  {i:3d}   {true_char:>4}   {model_char:>5}   {fbcca_char:>5}   {conf:>5.2f}   {result:>7}")
+        if is_two_step:
+            eeg_pred = results["eeg_only_preds"][i]
+            eeg_char = KEYBOARD_CHARS[eeg_pred] if 0 <= eeg_pred < 40 else "?"
+            print(f"  {i:3d}   {true_char:>4}   {eeg_char:>6}   {model_char:>5}   {fbcca_char:>5}   {conf:>5.2f}   {result:>7}")
+        else:
+            print(f"  {i:3d}   {true_char:>4}   {model_char:>5}   {fbcca_char:>5}   {conf:>5.2f}   {result:>7}")
 
 
 def print_duration_summary(results_by_duration, decoder_name="FBCCA"):
     """Print a comparison table across multiple trial durations."""
-    print("\n" + "=" * 80)
+    has_eeg = any("eeg_only_acc" in res for res in results_by_duration.values())
+
+    print("\n" + "=" * 90)
     print("MULTI-DURATION COMPARISON")
-    print("=" * 80)
+    print("=" * 90)
     dec_header = f"{decoder_name} Acc"
-    print(f"{'Duration':>10} | {dec_header:>10} | {'Model Acc':>10} | "
-          f"{'Correction':>10} | {'Trust':>10} | {'Top-5':>10}")
-    print("-" * 80)
+    header = f"{'Duration':>10} | {dec_header:>10} |"
+    if has_eeg:
+        header += f" {'EEG-only':>10} |"
+    header += f" {'Final Acc':>10} | {'Correction':>10} | {'Trust':>10} | {'Top-5':>10}"
+    print(header)
+    print("-" * 90)
 
     for dur, res in sorted(results_by_duration.items()):
-        print(f"  {dur:5.1f}s   | {res['fbcca_acc']:>9.1%} | {res['model_acc']:>9.1%} | "
-              f"{res['correction_rate']:>9.1%} | {res['trust_rate']:>9.1%} | "
-              f"{res['top5_acc']:>9.1%}")
+        line = f"  {dur:5.1f}s   | {res['fbcca_acc']:>9.1%} |"
+        if has_eeg:
+            eeg_acc = res.get("eeg_only_acc", float("nan"))
+            line += f" {eeg_acc:>9.1%} |"
+        line += (f" {res['model_acc']:>9.1%} | "
+                 f"{res['correction_rate']:>9.1%} | {res['trust_rate']:>9.1%} | "
+                 f"{res['top5_acc']:>9.1%}")
+        print(line)
 
-    print("=" * 80)
+    print("=" * 90)
 
 
 def main():
@@ -418,7 +498,7 @@ def main():
             print(f"Evaluating duration: {dur}s ({int(dur*200)}pts)")
             print(f"{'='*60}")
 
-            model_preds, model_probs, true_labels, fbcca_top1, subject_ids = run_evaluation(
+            results = run_evaluation(
                 model, tokenizer,
                 eeg_dir=args.eeg_dir,
                 device=device,
@@ -428,27 +508,38 @@ def main():
                 decoder_type=args.decoder_type,
             )
 
-            correction = compute_fbcca_correction_metrics(model_preds, true_labels, fbcca_top1)
-            top5_preds = np.argsort(-model_probs, axis=1)[:, :5]
-            top5_acc = np.any(top5_preds == true_labels[:, None], axis=1).mean()
+            correction = compute_fbcca_correction_metrics(
+                results["final_preds"], results["true_labels"], results["fbcca_top1"])
+            top5_preds = np.argsort(-results["final_probs"], axis=1)[:, :5]
+            top5_acc = np.any(top5_preds == results["true_labels"][:, None], axis=1).mean()
 
-            results_by_duration[dur] = {
-                **correction,
-                "top5_acc": float(top5_acc),
-            }
+            dur_summary = {**correction, "top5_acc": float(top5_acc)}
+
+            # Add EEG-only accuracy if two-step
+            if results["two_step"]:
+                eeg_p = results["eeg_only_preds"]
+                valid = eeg_p >= 0
+                if valid.sum() > 0:
+                    dur_summary["eeg_only_acc"] = float(
+                        (eeg_p[valid] == results["true_labels"][valid]).mean())
+
+            results_by_duration[dur] = dur_summary
 
             # Brief per-duration summary
             dec_name = args.decoder_type.upper()
+            eeg_str = ""
+            if "eeg_only_acc" in dur_summary:
+                eeg_str = f", EEG-only: {dur_summary['eeg_only_acc']:.1%}"
             print(f"  {dec_name}: {correction['fbcca_acc']:.1%}, "
                   f"Model: {correction['model_acc']:.1%}, "
-                  f"Top-5: {top5_acc:.1%}")
+                  f"Top-5: {top5_acc:.1%}{eeg_str}")
 
         print_duration_summary(results_by_duration, decoder_name=args.decoder_type.upper())
     else:
         # Single-duration mode (full output)
         dur = durations[0]
         print("Running evaluation...")
-        model_preds, model_probs, true_labels, fbcca_top1, subject_ids = run_evaluation(
+        results = run_evaluation(
             model, tokenizer,
             eeg_dir=args.eeg_dir,
             device=device,
@@ -458,20 +549,22 @@ def main():
             decoder_type=args.decoder_type,
         )
 
-        print_results(model_preds, model_probs, true_labels, fbcca_top1, subject_ids,
-                      decoder_name=args.decoder_type.upper())
+        print_results(results, decoder_name=args.decoder_type.upper())
 
         # Save predictions
         suffix = "" if dur == 3.0 else f"_{int(dur*200)}pt"
         out_path = Path(args.checkpoint) / f"eval_predictions{suffix}.npz"
-        np.savez(
-            out_path,
-            model_preds=model_preds,
-            model_probs=model_probs,
-            true_labels=true_labels,
-            fbcca_top1=fbcca_top1,
-            subject_ids=subject_ids,
-        )
+        save_dict = {
+            "final_preds": results["final_preds"],
+            "final_probs": results["final_probs"],
+            "true_labels": results["true_labels"],
+            "fbcca_top1": results["fbcca_top1"],
+            "subject_ids": results["subject_ids"],
+        }
+        if results["two_step"]:
+            save_dict["eeg_only_preds"] = results["eeg_only_preds"]
+            save_dict["eeg_only_probs"] = results["eeg_only_probs"]
+        np.savez(out_path, **save_dict)
         print(f"\nPredictions saved to {out_path}")
 
 

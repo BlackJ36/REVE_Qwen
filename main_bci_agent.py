@@ -67,6 +67,8 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=None,
                         help="Number of epochs (default: 10 for S1, 5 for S2)")
     parser.add_argument("--warmup_ratio", type=float, default=0.1)
+    parser.add_argument("--early_stopping_patience", type=int, default=5,
+                        help="Early stopping patience (eval rounds without improvement)")
 
     # Data quality
     parser.add_argument("--exclude_bad_subjects", action="store_true", default=False,
@@ -147,6 +149,7 @@ def main():
             exclude_subjects=exclude_subjects,
             decoder_type=args.decoder_type,
             cand_dropout=args.cand_dropout,
+            early_stopping_patience=args.early_stopping_patience,
             deepspeed_config=args.deepspeed,
         )
 
@@ -190,6 +193,7 @@ def main():
             exclude_subjects=exclude_subjects,
             decoder_type=args.decoder_type,
             cand_dropout=args.cand_dropout,
+            early_stopping_patience=args.early_stopping_patience,
             deepspeed_config=args.deepspeed,
         )
 

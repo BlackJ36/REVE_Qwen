@@ -20,7 +20,7 @@ TensorBoard scalars logged:
 import numpy as np
 
 
-def build_metrics_fn(target_token_ids, candidate_token_ids=None):
+def build_metrics_fn(target_token_ids, candidate_token_ids=None, two_step=False):
     """Build (compute_metrics, preprocess_logits_for_metrics) for Trainer.
 
     Args:
@@ -28,6 +28,9 @@ def build_metrics_fn(target_token_ids, candidate_token_ids=None):
         candidate_token_ids: optional dict with rank/conf token IDs for candidate mode.
             If provided, enables FBCCA correction/trust metrics.
             Keys: "rank_ids" (list of 3), "conf_ids" (dict str->int)
+        two_step: if True, each spell has 2 target labels (EEG-only + Final).
+            The 1st/3rd/5th... BCI target per sequence = EEG-only prediction,
+            the 2nd/4th/6th... = Final prediction. Enables separate metrics.
 
     Returns:
         (compute_metrics, preprocess_logits_for_metrics) tuple
@@ -65,14 +68,57 @@ def build_metrics_fn(target_token_ids, candidate_token_ids=None):
         if bci_mask.sum() > 0:
             bci_preds = preds[bci_mask]
             bci_labels = labels[bci_mask]
-            metrics["bci_acc"] = float((bci_preds == bci_labels).mean())
+            bci_top5_all = top5_preds[bci_mask]
 
-            # Top-5: true label in top-5 predictions?
-            bci_top5 = top5_preds[bci_mask]                 # (M, 5)
-            bci_labels_exp = bci_labels[:, np.newaxis]       # (M, 1)
+            # Overall accuracy (backward compatible)
+            metrics["bci_acc"] = float((bci_preds == bci_labels).mean())
+            bci_labels_exp = bci_labels[:, np.newaxis]
             metrics["bci_top5"] = float(
-                (bci_top5 == bci_labels_exp).any(axis=-1).mean()
+                (bci_top5_all == bci_labels_exp).any(axis=-1).mean()
             )
+
+            # --- Two-step split: EEG-only vs Final ---
+            if two_step:
+                # In each sequence, BCI targets alternate: odd=EEG-only, even=Final
+                # We split per-sequence to handle variable spell counts correctly
+                B = labels.shape[0]
+                eeg_preds_list, eeg_labels_list = [], []
+                final_preds_list, final_labels_list = [], []
+                eeg_top5_list, final_top5_list = [], []
+
+                for b in range(B):
+                    seq_bci_mask = bci_mask[b]
+                    if seq_bci_mask.sum() == 0:
+                        continue
+                    seq_bci_positions = np.where(seq_bci_mask)[0]
+                    for j, pos in enumerate(seq_bci_positions):
+                        if j % 2 == 0:  # odd-numbered target = EEG-only (0-indexed → even)
+                            eeg_preds_list.append(preds[b, pos])
+                            eeg_labels_list.append(labels[b, pos])
+                            eeg_top5_list.append(top5_preds[b, pos])
+                        else:  # even-numbered = Final
+                            final_preds_list.append(preds[b, pos])
+                            final_labels_list.append(labels[b, pos])
+                            final_top5_list.append(top5_preds[b, pos])
+
+                if eeg_preds_list:
+                    eeg_p = np.array(eeg_preds_list)
+                    eeg_l = np.array(eeg_labels_list)
+                    eeg_t5 = np.stack(eeg_top5_list)
+                    metrics["bci_eeg_acc"] = float((eeg_p == eeg_l).mean())
+                    metrics["bci_eeg_top5"] = float(
+                        (eeg_t5 == eeg_l[:, np.newaxis]).any(axis=-1).mean()
+                    )
+                    metrics["bci_eeg_count"] = len(eeg_preds_list)
+
+                if final_preds_list:
+                    fin_p = np.array(final_preds_list)
+                    fin_l = np.array(final_labels_list)
+                    fin_t5 = np.stack(final_top5_list)
+                    metrics["bci_final_acc"] = float((fin_p == fin_l).mean())
+                    metrics["bci_final_top5"] = float(
+                        (fin_t5 == fin_l[:, np.newaxis]).any(axis=-1).mean()
+                    )
 
             # Per-class accuracy (identifies dead/weak targets)
             per_class_acc = []
@@ -92,17 +138,10 @@ def build_metrics_fn(target_token_ids, candidate_token_ids=None):
             metrics["bci_top5"] = 0.0
             metrics["bci_count"] = 0
 
-        # --- FBCCA correction/trust metrics (candidate mode) ---
-        # In candidate mode, the label immediately before the supervised target
-        # at position p was the FBCCA rank1 prediction (at p-7 in the sequence).
-        # We can't access input_ids here, but we CAN measure how often the model's
-        # top-1 prediction differs from its top-2 — a proxy for confidence.
-        # We also compute the "agreement rate" between top-1 and top-2 predictions
-        # as a measure of model certainty.
+        # --- Model certainty ---
         if bci_mask.sum() > 0:
             bci_top1 = preds[bci_mask]
             bci_top2 = top5_preds[bci_mask][:, 1]
-            # Model certainty: top-1 != top-2 means model is more decisive
             metrics["bci_certainty"] = float((bci_top1 != bci_top2).mean())
 
         # --- Non-BCI supervised token accuracy (EOS, NL text in Stage 2) ---
