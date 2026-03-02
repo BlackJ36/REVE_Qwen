@@ -82,6 +82,12 @@ class CandidateStage1Dataset(Dataset):
         self.window_step = window_step
         self.duration_scale = trial_duration_pts / 600.0
         self.cand_dropout = cand_dropout
+        self._dropout_count = 0
+        self._total_spell_count = 0
+
+        if cand_dropout > 0:
+            print(f"[{split}] Candidate dropout enabled: {cand_dropout:.0%} "
+                  f"(indices randomized, scores preserved)")
 
         # Load EEG data
         data = torch.load(self.eeg_dir / f"{split}_eeg.pt", weights_only=True)
@@ -243,9 +249,10 @@ class CandidateStage1Dataset(Dataset):
             # so confidence token distribution stays realistic and model can't
             # detect dropout from score patterns alone.
             top3_idx, top3_sc = fbcca_candidates[i]
+            self._total_spell_count += 1
             if self.cand_dropout > 0 and random.random() < self.cand_dropout:
                 top3_idx = random.sample(range(40), 3)
-                # Keep original scores → confidence token looks natural
+                self._dropout_count += 1
 
             # Decoder candidates: [rank1][tXX] [rank2][tYY] [rank3][tZZ]
             for rank_j in range(3):
@@ -329,6 +336,11 @@ class CandidateStage2Dataset(Dataset):
         self.split = split
         self.duration_scale = trial_duration_pts / 600.0
         self.cand_dropout = cand_dropout
+        self._dropout_count = 0
+        self._total_spell_count = 0
+
+        if cand_dropout > 0:
+            print(f"[S2 {split}] Candidate dropout enabled: {cand_dropout:.0%}")
 
         # Word vocabulary (custom or built-in)
         self.vocab = word_vocab if word_vocab is not None else WordVocab()
@@ -581,8 +593,10 @@ class CandidateStage2Dataset(Dataset):
 
             # Candidate dropout: randomize indices, keep scores
             top3_idx, top3_sc = fbcca_candidates[i]
+            self._total_spell_count += 1
             if self.cand_dropout > 0 and random.random() < self.cand_dropout:
                 top3_idx = random.sample(range(40), 3)
+                self._dropout_count += 1
 
             # Decoder candidates
             for rank_j in range(3):
