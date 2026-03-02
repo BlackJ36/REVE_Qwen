@@ -21,7 +21,7 @@ if [ -z "$NUM_GPUS" ]; then
     if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
         NUM_GPUS=$(echo "$CUDA_VISIBLE_DEVICES" | awk -F',' '{print NF}')
     else
-        NUM_GPUS=6
+        NUM_GPUS=5
     fi
 fi
 
