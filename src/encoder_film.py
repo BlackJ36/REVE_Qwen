@@ -89,8 +89,9 @@ class FiLMHybridEncoder(nn.Module):
         else:
             fused = backbone_out
 
-        # Project to LLM hidden dim
-        return self.projector(fused)  # (B, N, llm_dim)
+        # Project to LLM hidden dim (match projector weight dtype for mixed precision)
+        proj_dtype = next(self.projector.parameters()).dtype
+        return self.projector(fused.to(dtype=proj_dtype))  # (B, N, llm_dim)
 
     @property
     def output_dim(self):
