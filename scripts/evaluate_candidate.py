@@ -28,7 +28,8 @@ from src.dataset_bci_candidate import CandidateStage1Dataset
 from src.dataset_bci_agent import BCIAgentCollator, BETA_BAD_SUBJECTS
 from src.metrics_bci_agent import compute_fbcca_correction_metrics
 from src.model_bci_agent import build_bci_agent_model
-from src.tokens import TARGET_INDEX_TO_TOKEN, KEYBOARD_CHARS
+from src.tokens import TARGET_INDEX_TO_TOKEN
+from src.templates_zh import KEYBOARD_CHARS
 
 
 def load_model_for_inference(

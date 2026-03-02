@@ -31,10 +31,11 @@ from src.dataset_bci_agent import BETA_BAD_SUBJECTS
 from src.dataset_bci_candidate import CandidateStage1Dataset
 from src.dataset_bci_agent import BCIAgentCollator
 from src.tokens import (
-    TARGET_INDEX_TO_TOKEN, KEYBOARD_CHARS, BCI_PAD,
+    TARGET_INDEX_TO_TOKEN, BCI_PAD,
     RANK1, RANK2, RANK3, CONF_HIGH, CONF_MID, CONF_LOW,
     score_gap_to_conf_token,
 )
+from src.templates_zh import KEYBOARD_CHARS
 from src.word_vocab import CHAR_TO_LABEL
 
 # Reuse model loading from evaluate script
