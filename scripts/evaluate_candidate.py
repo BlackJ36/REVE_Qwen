@@ -205,7 +205,7 @@ def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_si
                     probs = F.softmax(target_logits, dim=0)
                     pred_label = probs.argmax().item()
                     model_preds.append(pred_label)
-                    model_probs.append(probs.cpu().numpy())
+                    model_probs.append(probs.cpu().float().numpy())
                 else:
                     model_preds.append(-1)
                     model_probs.append(np.zeros(40))
