@@ -109,15 +109,15 @@ def sample_word(category_weights=None):
 
 
 def generate_random_sequence(length):
-    """Generate random A-Z character sequence (no linguistic pattern).
+    """Generate random character sequence from all 40 keyboard chars.
 
-    This prevents the LLM from learning to ignore EEG and just do
-    language model completion.
+    Covers A-Z, 0-9, and special chars to prevent class imbalance.
+    Also prevents the LLM from learning language model shortcuts.
 
     Returns:
         (sequence_string, list_of_label_indices)
     """
-    chars = [random.choice(KEYBOARD_CHARS[:26]) for _ in range(length)]
+    chars = [random.choice(KEYBOARD_CHARS) for _ in range(length)]
     word = "".join(chars)
     return word, word_to_labels(word)
 
@@ -182,5 +182,5 @@ class WordVocab:
         return word, word_to_labels(word)
 
     def random_sequence(self, length):
-        """Generate random A-Z sequence. Returns (word, label_indices)."""
+        """Generate random sequence from all 40 chars. Returns (word, label_indices)."""
         return generate_random_sequence(length)
