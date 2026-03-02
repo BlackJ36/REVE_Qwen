@@ -127,7 +127,7 @@ class BCIAgentTrainer(Trainer):
 def run_stage1_training(
     eeg_dir="data/eeg_tensors",
     output_dir="output_bci_agent_s1",
-    model_name="Qwen/Qwen3-4B-Instruct",
+    model_name="Qwen/Qwen3-4B-Instruct-2507",
     from_modelscope=True,
     reve_dir="models",
     encoder_type="reve",
@@ -293,7 +293,7 @@ def run_stage1_training(
 def run_stage2_training(
     eeg_dir="data/eeg_tensors",
     output_dir="output_bci_agent_s2",
-    model_name="Qwen/Qwen3-4B-Instruct",
+    model_name="Qwen/Qwen3-4B-Instruct-2507",
     from_modelscope=True,
     reve_dir="models",
     encoder_type="reve",

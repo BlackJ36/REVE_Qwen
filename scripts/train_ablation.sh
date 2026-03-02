@@ -106,7 +106,7 @@ run_stage1() {
         --stage 1 \
         --eeg_dir data/eeg_tensors \
         --output_dir "$output_dir" \
-        --model_name Qwen/Qwen3-4B-Instruct \
+        --model_name Qwen/Qwen3-4B-Instruct-2507 \
         --reve_dir models \
         --encoder_type "$encoder_type" \
         $fbcca_flag \
@@ -147,7 +147,7 @@ run_stage2() {
         --stage 2 \
         --eeg_dir data/eeg_tensors \
         --output_dir "$output_dir" \
-        --model_name Qwen/Qwen3-4B-Instruct \
+        --model_name Qwen/Qwen3-4B-Instruct-2507 \
         --reve_dir models \
         --encoder_type "$encoder_type" \
         $fbcca_flag \

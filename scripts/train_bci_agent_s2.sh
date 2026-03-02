@@ -15,7 +15,7 @@ deepspeed --num_gpus $NUM_GPUS main_bci_agent.py \
     --stage 2 \
     --eeg_dir data/eeg_tensors \
     --output_dir output_bci_agent_s2 \
-    --model_name Qwen/Qwen3-4B-Instruct \
+    --model_name Qwen/Qwen3-4B-Instruct-2507 \
     --reve_dir models \
     --stage1_checkpoint $S1_CHECKPOINT \
     --lora_rank 32 \

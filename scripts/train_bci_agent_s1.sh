@@ -11,7 +11,7 @@ deepspeed --num_gpus $NUM_GPUS main_bci_agent.py \
     --stage 1 \
     --eeg_dir data/eeg_tensors \
     --output_dir output_bci_agent_s1 \
-    --model_name Qwen/Qwen3-4B-Instruct \
+    --model_name Qwen/Qwen3-4B-Instruct-2507 \
     --reve_dir models \
     --batch_size 64 \
     --grad_accum 2 \

@@ -35,7 +35,7 @@ from src.templates_zh import KEYBOARD_CHARS
 def load_model_for_inference(
     checkpoint_dir,
     s1_checkpoint,
-    model_name="Qwen/Qwen3-4B-Instruct",
+    model_name="Qwen/Qwen3-4B-Instruct-2507",
     encoder_type="reve",
     fbcca_mode="candidate",
     reve_dir="models",
@@ -373,7 +373,7 @@ def main():
     parser.add_argument("--s1_checkpoint", type=str, required=True,
                         help="S1 checkpoint directory (for base model loading)")
     parser.add_argument("--eeg_dir", type=str, default="data/eeg_tensors")
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-4B-Instruct")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-4B-Instruct-2507")
     parser.add_argument("--encoder_type", type=str, default="reve")
     parser.add_argument("--reve_dir", type=str, default="models")
     parser.add_argument("--batch_size", type=int, default=8)

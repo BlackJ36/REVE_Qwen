@@ -140,7 +140,7 @@ def _get_llm_dim(qwen_model):
 
 
 def build_bci_agent_model(
-    model_name="Qwen/Qwen3-4B-Instruct",
+    model_name="Qwen/Qwen3-4B-Instruct-2507",
     from_modelscope=True,
     reve_dir="models",
     stage=1,

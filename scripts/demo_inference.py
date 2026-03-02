@@ -257,7 +257,7 @@ def main():
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--s1_checkpoint", type=str, required=True)
     parser.add_argument("--eeg_dir", type=str, default="data/eeg_tensors")
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-4B-Instruct")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-4B-Instruct-2507")
     parser.add_argument("--encoder_type", type=str, default="reve")
     parser.add_argument("--reve_dir", type=str, default="models")
     parser.add_argument("--device", type=str, default="cuda")

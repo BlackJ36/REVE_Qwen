@@ -16,7 +16,7 @@ def parse_args():
                         help="Output directory (default: output_bci_agent_s{stage})")
 
     # Model
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-4B-Instruct")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-4B-Instruct-2507")
     parser.add_argument("--from_modelscope", action="store_true", default=True)
     parser.add_argument("--no_modelscope", dest="from_modelscope", action="store_false")
     parser.add_argument("--reve_dir", type=str, default="models")
