@@ -85,7 +85,7 @@ CONFIGS=(
     "reve_only:reve:--fbcca_mode none"
     "labram_fbcca:labram:--fbcca_mode film"
     "labram_only:labram:--fbcca_mode none"
-    "reve_ft_etrca:reve:--fbcca_mode candidate --decoder_type etrca --s1_lora_rank 16 --reve_finetune_dir output_reve_finetune"
+    "reve_ft_etrca:reve:--fbcca_mode candidate --decoder_type etrca --reve_finetune_dir output_reve_finetune"
 )
 
 run_stage1() {
