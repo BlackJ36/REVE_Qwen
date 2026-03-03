@@ -10,7 +10,8 @@ To use a custom vocabulary, create a JSON file:
     {
         "common": ["THE", "AND", "FOR", ...],
         "bci": ["HELP", "YES", "NO", ...],
-        "weights": {"common": 0.5, "bci": 0.3, "random": 0.2}
+        "sentence": ["I WANT WATER", "CALL DOCTOR", ...],
+        "weights": {"common": 0.3, "bci": 0.2, "sentence": 0.3, "random": 0.2}
     }
 Then pass --word_vocab path/to/vocab.json to training.
 """
@@ -70,6 +71,34 @@ BCI_PHRASES = _filter_words([
     "BACK", "DONE", "WAIT", "AGAIN", "FOOD", "DRINK", "WARM", "REST",
 ])
 
+# Short sentences — household needs and daily expressions for locked-in patients.
+# Spaces are stripped before spelling (e.g., "I WANT WATER" → "IWANTWATER").
+# Kept short (≤15 chars after stripping) to fit within max_spells.
+_RAW_SENTENCES = [
+    # Basic needs
+    "I WANT WATER", "I NEED HELP", "I AM COLD", "I AM HOT", "I AM TIRED",
+    "I AM HUNGRY", "I FEEL SICK", "I FEEL GOOD", "I FEEL PAIN", "I WANT FOOD",
+    "I NEED REST", "I AM FINE", "I WANT MORE", "I AM DONE", "I NEED SLEEP",
+    # Requests
+    "CALL DOCTOR", "CALL NURSE", "OPEN DOOR", "CLOSE DOOR", "TURN ON LIGHT",
+    "TURN OFF LIGHT", "OPEN WINDOW", "COME HERE", "HELP ME", "HOLD MY HAND",
+    "SIT ME UP", "LAY ME DOWN", "MORE PLEASE", "STOP PLEASE", "WAIT PLEASE",
+    # Communication
+    "THANK YOU", "I LOVE YOU", "GOOD NIGHT", "GOOD DAY", "SEE YOU LATER",
+    "I AM SORRY", "I AM OK", "NOT YET", "YES PLEASE", "NO THANKS",
+    "HOW ARE YOU", "MISS YOU", "COME BACK", "STAY HERE", "GO HOME",
+    # Environment
+    "TOO LOUD", "TOO DARK", "TOO COLD", "TOO HOT", "NEED AIR",
+    "WANT MUSIC", "CHANGE SIDE", "FIX PILLOW", "NEED BLANKET", "WANT BOOK",
+    # Daily activities
+    "WATCH TV", "READ BOOK", "GO OUTSIDE", "TAKE WALK", "EAT NOW",
+    "DRINK WATER", "BRUSH TEETH", "WASH FACE", "GET DRESSED", "TAKE BATH",
+]
+
+# Strip spaces and filter to A-Z only
+SENTENCES = [s.replace(" ", "") for s in _RAW_SENTENCES]
+SENTENCES = _filter_words(SENTENCES)
+
 
 def word_to_labels(word):
     """Convert word to list of label indices. Returns None if invalid chars."""
@@ -86,13 +115,13 @@ def sample_word(category_weights=None):
     """Sample a word and return (word, label_indices).
 
     Args:
-        category_weights: dict with keys "common", "bci", "random".
-            Default: {"common": 0.5, "bci": 0.3, "random": 0.2}
+        category_weights: dict with keys "common", "bci", "sentence", "random".
+            Default: {"common": 0.4, "bci": 0.2, "sentence": 0.2, "random": 0.2}
 
     Returns:
         (word_string, list_of_label_indices)
     """
-    weights = category_weights or {"common": 0.5, "bci": 0.3, "random": 0.2}
+    weights = category_weights or {"common": 0.4, "bci": 0.2, "sentence": 0.2, "random": 0.2}
     categories = list(weights.keys())
     probs = [weights[c] for c in categories]
     choice = random.choices(categories, weights=probs, k=1)[0]
@@ -101,6 +130,8 @@ def sample_word(category_weights=None):
         word = random.choice(COMMON_WORDS)
     elif choice == "bci":
         word = random.choice(BCI_PHRASES)
+    elif choice == "sentence":
+        word = random.choice(SENTENCES)
     else:
         word, _ = generate_random_sequence(random.randint(2, 6))
         return word, word_to_labels(word)
@@ -126,12 +157,14 @@ class WordVocab:
     """Configurable word vocabulary for Stage 2 spelling.
 
     Supports loading from a JSON file or using built-in defaults.
+    Categories: common (words), bci (patient phrases), sentence (short sentences), random.
 
     JSON format:
         {
             "common": ["THE", "AND", ...],
             "bci": ["HELP", "YES", ...],
-            "weights": {"common": 0.5, "bci": 0.3, "random": 0.2}
+            "sentence": ["IWANTWATER", "INEEDHELP", ...],
+            "weights": {"common": 0.3, "bci": 0.2, "sentence": 0.3, "random": 0.2}
         }
 
     All words are auto-filtered to A-Z only. Invalid words are silently dropped.
@@ -139,7 +172,7 @@ class WordVocab:
     Usage:
         vocab = WordVocab()                          # built-in defaults
         vocab = WordVocab("path/to/vocab.json")      # from file
-        word, labels = vocab.sample()                 # sample a word
+        word, labels = vocab.sample()                 # sample a word/sentence
         word, labels = vocab.random_sequence(4)       # random chars
     """
 
@@ -149,7 +182,8 @@ class WordVocab:
         else:
             self.common = list(COMMON_WORDS)
             self.bci = list(BCI_PHRASES)
-            self.weights = {"common": 0.5, "bci": 0.3, "random": 0.2}
+            self.sentence = list(SENTENCES)
+            self.weights = {"common": 0.3, "bci": 0.2, "sentence": 0.3, "random": 0.2}
 
     def _load_from_file(self, path):
         path = Path(path)
@@ -157,17 +191,18 @@ class WordVocab:
             data = json.load(f)
         self.common = _filter_words([w.upper() for w in data.get("common", [])])
         self.bci = _filter_words([w.upper() for w in data.get("bci", [])])
-        self.weights = data.get("weights", {"common": 0.5, "bci": 0.3, "random": 0.2})
-        # Validate weights keys
+        self.sentence = _filter_words([w.upper().replace(" ", "") for w in data.get("sentence", [])])
+        self.weights = data.get("weights", {"common": 0.3, "bci": 0.2, "sentence": 0.3, "random": 0.2})
         for key in self.weights:
-            if key not in ("common", "bci", "random"):
-                raise ValueError(f"Unknown weight key: {key!r}. Must be common/bci/random.")
-        if not self.common and not self.bci:
+            if key not in ("common", "bci", "sentence", "random"):
+                raise ValueError(f"Unknown weight key: {key!r}. Must be common/bci/sentence/random.")
+        if not self.common and not self.bci and not self.sentence:
             raise ValueError(f"Vocab file {path} has no valid words after filtering to A-Z")
-        print(f"WordVocab: loaded {len(self.common)} common + {len(self.bci)} bci words from {path}")
+        print(f"WordVocab: loaded {len(self.common)} common + {len(self.bci)} bci "
+              f"+ {len(self.sentence)} sentence from {path}")
 
     def sample(self):
-        """Sample a word. Returns (word, label_indices)."""
+        """Sample a word/sentence. Returns (word, label_indices)."""
         categories = list(self.weights.keys())
         probs = [self.weights[c] for c in categories]
         choice = random.choices(categories, weights=probs, k=1)[0]
@@ -176,6 +211,8 @@ class WordVocab:
             word = random.choice(self.common)
         elif choice == "bci" and self.bci:
             word = random.choice(self.bci)
+        elif choice == "sentence" and self.sentence:
+            word = random.choice(self.sentence)
         else:
             return self.random_sequence(random.randint(2, 6))
 

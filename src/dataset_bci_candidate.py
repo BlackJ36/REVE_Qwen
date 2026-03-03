@@ -302,11 +302,11 @@ class CandidateStage1Dataset(Dataset):
 
 
 class CandidateStage2Dataset(Dataset):
-    """Stage 2: word-level spelling with decoder candidate injection.
+    """Stage 2: word/sentence-level spelling with decoder candidate injection.
 
     Samples from data types:
-      - "word" (40%): spell a real word using EEG trials with matching labels
-      - "random" (30%): random char sequence (prevents LM shortcuts)
+      - "word" (50%): spell a word or sentence using EEG trials with matching labels
+      - "random" (20%): random char sequence (prevents LM shortcuts)
       - "nl" (15%): pure natural language (no EEG)
       - "error" (15%): error handling / commands
 
@@ -362,7 +362,7 @@ class CandidateStage2Dataset(Dataset):
         self.vocab = word_vocab if word_vocab is not None else WordVocab()
 
         # Weights for data types
-        self.weights = weights or {"word": 0.4, "random": 0.3, "nl": 0.15, "error": 0.15}
+        self.weights = weights or {"word": 0.5, "random": 0.2, "nl": 0.15, "error": 0.15}
         self.types = list(self.weights.keys())
         self.type_probs = [self.weights[t] for t in self.types]
 
