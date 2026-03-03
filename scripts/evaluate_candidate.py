@@ -97,8 +97,22 @@ def load_model_for_inference(
     else:
         raise FileNotFoundError(f"No adapter weights found in {checkpoint_dir}")
 
-    set_peft_model_state_dict(model.qwen, adapter_state)
+    # Diagnostic: check weight norms before loading
+    embed_before = model.qwen.get_input_embeddings().weight.data[-47:].norm().item()
+    lora_keys = [k for k in adapter_state if "lora_A" in k]
+    embed_keys = [k for k in adapter_state if "embed_tokens" in k]
+    print(f"  Adapter state: {len(adapter_state)} keys, "
+          f"{len(lora_keys)} LoRA, {len(embed_keys)} embed")
+
+    result = set_peft_model_state_dict(model.qwen, adapter_state)
     print(f"Loaded trained S2 adapter from {checkpoint_dir}")
+
+    # Diagnostic: check weight norms after loading
+    embed_after = model.qwen.get_input_embeddings().weight.data[-47:].norm().item()
+    print(f"  Embed norm: {embed_before:.4f} -> {embed_after:.4f} "
+          f"({'CHANGED' if abs(embed_after - embed_before) > 0.01 else 'UNCHANGED!'})")
+    if hasattr(result, '__len__'):
+        print(f"  Load result: {result}")
 
     # Step 3: Override encoder with S2 weights
     s2_enc_path = checkpoint_dir / "encoder_trainable.pt"
