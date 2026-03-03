@@ -74,6 +74,7 @@ class CandidateStage1Dataset(Dataset):
         trial_duration_pts=600,
         decoder_type="fbcca",
         cand_dropout=0.0,
+        eeg_only_labels=False,
     ):
         self.eeg_dir = Path(eeg_dir)
         self.tokenizer = tokenizer
@@ -84,6 +85,7 @@ class CandidateStage1Dataset(Dataset):
         self.window_step = window_step
         self.duration_scale = trial_duration_pts / 600.0
         self.cand_dropout = cand_dropout
+        self.eeg_only_labels = eeg_only_labels
         self._dropout_count = 0
         self._total_spell_count = 0
 
@@ -281,9 +283,9 @@ class CandidateStage1Dataset(Dataset):
             input_ids.append(self.conf_ids[conf_token])
             labels.append(-100)
 
-            # True target (Final supervised point)
+            # True target (Final supervised point — masked in eeg_only mode)
             input_ids.append(tid)
-            labels.append(tid)
+            labels.append(-100 if self.eeg_only_labels else tid)
 
             # Transition separator (except after last spell)
             if i < K - 1:
@@ -337,6 +339,7 @@ class CandidateStage2Dataset(Dataset):
         trial_duration_pts=600,
         decoder_type="fbcca",
         cand_dropout=0.0,
+        eeg_only_labels=False,
     ):
         self.eeg_dir = Path(eeg_dir)
         self.tokenizer = tokenizer
@@ -348,6 +351,7 @@ class CandidateStage2Dataset(Dataset):
         self.split = split
         self.duration_scale = trial_duration_pts / 600.0
         self.cand_dropout = cand_dropout
+        self.eeg_only_labels = eeg_only_labels
         self._dropout_count = 0
         self._total_spell_count = 0
 
@@ -631,9 +635,9 @@ class CandidateStage2Dataset(Dataset):
             input_ids.append(self.conf_ids[conf_token])
             labels.append(-100)
 
-            # True target (Final supervised point)
+            # True target (Final supervised point — masked in eeg_only mode)
             input_ids.append(tid)
-            labels.append(tid)
+            labels.append(-100 if self.eeg_only_labels else tid)
 
             # Transition
             if i < K - 1:

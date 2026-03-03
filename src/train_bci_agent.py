@@ -191,7 +191,8 @@ def run_stage1_training(
     print("\nLoading datasets...")
     if fbcca_mode == "candidate":
         DatasetClass = CandidateStage1Dataset
-        extra_kwargs = {"decoder_type": decoder_type, "cand_dropout": cand_dropout}
+        extra_kwargs = {"decoder_type": decoder_type, "cand_dropout": cand_dropout,
+                        "eeg_only_labels": True}
     else:
         DatasetClass = BCIAgentStage1Dataset
         extra_kwargs = {}
@@ -252,10 +253,10 @@ def run_stage1_training(
     best_dir = Path(output_dir) / "best"
     best_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build evaluation metrics (two_step for candidate mode)
+    # Build evaluation metrics
+    # Stage 1 candidate: eeg_only_labels → 1 target/spell, no two_step split needed
     target_ids = get_target_token_ids(tokenizer)
-    use_two_step = (fbcca_mode == "candidate")
-    compute_metrics, preprocess_logits = build_metrics_fn(target_ids, two_step=use_two_step)
+    compute_metrics, preprocess_logits = build_metrics_fn(target_ids, two_step=False)
 
     trainer = BCIAgentTrainer(
         model=model,
