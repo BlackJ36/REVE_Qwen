@@ -42,6 +42,7 @@ def load_model_for_inference(
     window_size=300,
     device="cuda",
     from_modelscope=True,
+    reve_finetune_dir=None,
 ):
     """Load a trained S2 model for inference.
 
@@ -66,6 +67,7 @@ def load_model_for_inference(
         encoder_type=encoder_type,
         fbcca_mode=fbcca_mode,
         window_size=window_size,
+        reve_finetune_dir=reve_finetune_dir,
     )
 
     # Step 2: Load S1 encoder weights
@@ -518,6 +520,8 @@ def main():
     parser.add_argument("--decoder_type", type=str, default="fbcca",
                         choices=["fbcca", "trca", "etrca"],
                         help="Decoder type for candidate predictions (default: fbcca)")
+    parser.add_argument("--reve_finetune_dir", type=str, default=None,
+                        help="Directory with fine-tuned REVE LoRA (from finetune_reve.py)")
     parser.add_argument("--letters_only", action="store_true",
                         help="Evaluate only letter targets (A-Z, indices 0-25), excluding digits and special chars")
     args = parser.parse_args()
@@ -535,6 +539,7 @@ def main():
         reve_dir=args.reve_dir,
         device=device,
         from_modelscope=args.from_modelscope,
+        reve_finetune_dir=args.reve_finetune_dir,
     )
 
     # Determine durations to evaluate
