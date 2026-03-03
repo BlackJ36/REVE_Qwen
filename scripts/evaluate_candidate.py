@@ -47,72 +47,69 @@ def load_model_for_inference(
     """Load a trained S2 model for inference.
 
     Strategy:
-      1. Build model with stage=2 (reproduces exact training structure:
-         base Qwen -> merge S1 LoRA -> apply fresh S2 LoRA config)
-      2. Load trained S2 adapter weights into the matching PeftModel
-      3. Override encoder with S2 weights
-      4. Merge LoRA for faster inference
+      1. Build base model (stage=1, no LoRA)
+      2. Load and merge S1 LoRA, restore embeddings
+      3. Clean PEFT metadata so from_pretrained sees a plain model
+      4. Load S2 adapter via PeftModel.from_pretrained (handles all key mapping)
+      5. Merge S2 LoRA for faster inference
     """
-    import json
-
-    from peft.utils.save_and_load import set_peft_model_state_dict
+    from peft import PeftModel as PeftModelClass
 
     checkpoint_dir = Path(checkpoint_dir)
+    s1_dir = Path(s1_checkpoint)
 
-    # Read S2 adapter config to match LoRA params exactly
-    adapter_config_path = checkpoint_dir / "adapter_config.json"
-    if not adapter_config_path.exists():
-        raise FileNotFoundError(f"No adapter_config.json in {checkpoint_dir}")
-    with open(adapter_config_path) as f:
-        adapter_config = json.load(f)
-    lora_rank = adapter_config.get("r", 32)
-    lora_alpha = adapter_config.get("lora_alpha", 64)
-    lora_dropout = adapter_config.get("lora_dropout", 0.05)
-
-    # Step 1: Build model with same structure as training
-    # This internally: loads base Qwen -> merges S1 LoRA -> applies fresh S2 LoRA
+    # Step 1: Build base model (no LoRA)
     model, tokenizer = build_bci_agent_model(
         model_name=model_name,
         from_modelscope=from_modelscope,
         reve_dir=reve_dir,
-        stage=2,
-        stage1_checkpoint=s1_checkpoint,
+        stage=1,
         encoder_type=encoder_type,
         fbcca_mode=fbcca_mode,
         window_size=window_size,
         reve_finetune_dir=reve_finetune_dir,
-        lora_rank=lora_rank,
-        lora_alpha=lora_alpha,
-        lora_dropout=lora_dropout,
     )
 
-    # Step 2: Load trained S2 adapter weights
-    adapter_safetensors = checkpoint_dir / "adapter_model.safetensors"
-    adapter_bin = checkpoint_dir / "adapter_model.bin"
-    if adapter_safetensors.exists():
-        from safetensors.torch import load_file
-        adapter_state = load_file(str(adapter_safetensors))
-    elif adapter_bin.exists():
-        adapter_state = torch.load(adapter_bin, map_location="cpu", weights_only=True)
-    else:
-        raise FileNotFoundError(f"No adapter weights found in {checkpoint_dir}")
+    # Step 2: Load S1 encoder
+    enc_path = s1_dir / "encoder_trainable.pt"
+    if enc_path.exists():
+        state_dict = torch.load(enc_path, map_location="cpu", weights_only=True)
+        model.encoder.load_state_dict(state_dict, strict=False)
+        print(f"Loaded S1 encoder from {enc_path}")
 
-    # Fix key format: PEFT saves modules_to_save as ".modules_to_save.weight"
-    # but the PeftModel expects ".modules_to_save.default.weight" (with adapter name)
-    fixed_state = {}
-    for key, value in adapter_state.items():
-        if ".modules_to_save.weight" in key:
-            fixed_key = key.replace(".modules_to_save.weight", ".modules_to_save.default.weight")
-            fixed_state[fixed_key] = value
-        else:
-            fixed_state[key] = value
+    # Step 3: Merge S1 LoRA (if exists) + restore embeddings
+    if (s1_dir / "adapter_config.json").exists():
+        model.qwen = PeftModelClass.from_pretrained(model.qwen, str(s1_dir))
+        model.qwen = model.qwen.merge_and_unload()
+        print(f"Loaded and merged S1 LoRA from {s1_dir}")
 
-    # Load LoRA weights via PEFT API
-    set_peft_model_state_dict(model.qwen, fixed_state)
+        # Clean PEFT metadata left by merge_and_unload to prevent double-nesting
+        for attr in ("peft_config", "_hf_peft_config_loaded"):
+            if hasattr(model.qwen, attr):
+                delattr(model.qwen, attr)
 
-    # Verify modules_to_save loaded correctly
-    embed_norm = model.qwen.get_input_embeddings().weight.data[-47:].norm().item()
-    print(f"Loaded trained S2 adapter from {checkpoint_dir} (embed norm={embed_norm:.4f})")
+    qwen_path = s1_dir / "qwen_trainable.pt"
+    if qwen_path.exists():
+        qwen_state = torch.load(qwen_path, map_location="cpu", weights_only=True)
+        ovs = model.original_vocab_size
+        if "embed_tokens.new_rows" in qwen_state:
+            model.qwen.get_input_embeddings().weight.data[ovs:] = qwen_state["embed_tokens.new_rows"]
+            print(f"  Restored {qwen_state['embed_tokens.new_rows'].shape[0]} new token embeddings")
+        if "lm_head.new_rows" in qwen_state:
+            model.qwen.lm_head.weight.data[ovs:] = qwen_state["lm_head.new_rows"]
+            print(f"  Restored lm_head new token rows")
+
+    # Step 4: Load S2 adapter (PeftModel.from_pretrained handles modules_to_save correctly)
+    embed_before = model.qwen.get_input_embeddings().weight.data[-47:].norm().item()
+    print(f"Loading S2 adapter from {checkpoint_dir}")
+    model.qwen = PeftModelClass.from_pretrained(model.qwen, str(checkpoint_dir))
+    embed_after = model.qwen.get_input_embeddings().weight.data[-47:].norm().item()
+    print(f"  Embed norm: {embed_before:.4f} -> {embed_after:.4f} "
+          f"({'OK' if abs(embed_after - embed_before) > 0.01 else 'WARNING: unchanged'})")
+
+    # Step 5: Merge S2 LoRA for faster inference
+    model.qwen = model.qwen.merge_and_unload()
+    print("Merged S2 LoRA into base model")
 
     # Step 3: Override encoder with S2 weights
     s2_enc_path = checkpoint_dir / "encoder_trainable.pt"
