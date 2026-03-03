@@ -298,6 +298,43 @@ def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_si
     }
 
 
+def filter_results_by_char_type(results, keep="letters"):
+    """Filter evaluation results by character type.
+
+    Args:
+        results: dict from run_evaluation()
+        keep: "letters" (A-Z, indices 0-25) or "digits" (1-0, indices 26-35)
+
+    Returns:
+        Filtered results dict (same structure, fewer trials)
+    """
+    true_labels = results["true_labels"]
+    if keep == "letters":
+        mask = true_labels <= 25
+        desc = "letters only (A-Z)"
+    elif keep == "digits":
+        mask = (true_labels >= 26) & (true_labels <= 35)
+        desc = "digits only (0-9)"
+    else:
+        raise ValueError(f"Unknown keep={keep!r}, must be 'letters' or 'digits'")
+
+    n_before = len(true_labels)
+    n_after = mask.sum()
+    print(f"\nFiltering: {desc} → {n_after}/{n_before} trials kept")
+
+    filtered = {
+        "true_labels": true_labels[mask],
+        "fbcca_top1": results["fbcca_top1"][mask],
+        "subject_ids": results["subject_ids"][mask],
+        "final_preds": results["final_preds"][mask],
+        "final_probs": results["final_probs"][mask],
+        "eeg_only_preds": results["eeg_only_preds"][mask],
+        "eeg_only_probs": results["eeg_only_probs"][mask],
+        "two_step": results["two_step"],
+    }
+    return filtered
+
+
 def print_results(results, decoder_name="FBCCA"):
     """Print comprehensive evaluation results."""
     model_preds = results["final_preds"]
@@ -476,6 +513,8 @@ def main():
     parser.add_argument("--decoder_type", type=str, default="fbcca",
                         choices=["fbcca", "trca", "etrca"],
                         help="Decoder type for candidate predictions (default: fbcca)")
+    parser.add_argument("--letters_only", action="store_true",
+                        help="Evaluate only letter targets (A-Z, indices 0-25), excluding digits and special chars")
     args = parser.parse_args()
     if args.no_modelscope:
         args.from_modelscope = False
@@ -513,6 +552,9 @@ def main():
                 trial_duration=dur,
                 decoder_type=args.decoder_type,
             )
+
+            if args.letters_only:
+                results = filter_results_by_char_type(results, keep="letters")
 
             correction = compute_fbcca_correction_metrics(
                 results["final_preds"], results["true_labels"], results["fbcca_top1"])
@@ -554,6 +596,9 @@ def main():
             trial_duration=dur,
             decoder_type=args.decoder_type,
         )
+
+        if args.letters_only:
+            results = filter_results_by_char_type(results, keep="letters")
 
         print_results(results, decoder_name=args.decoder_type.upper())
 
