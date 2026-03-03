@@ -34,6 +34,11 @@ def _filter_words(words):
     return [w for w in words if all(c in ALPHA_CHARS for c in w)]
 
 
+def _to_alpha(s):
+    """Strip everything except A-Z from an uppercase string."""
+    return "".join(c for c in s.upper() if c in ALPHA_CHARS)
+
+
 # Common English words (high-frequency, all A-Z)
 COMMON_WORDS = _filter_words([
     "THE", "AND", "FOR", "ARE", "BUT", "NOT", "YOU", "ALL", "CAN", "HER",
@@ -95,8 +100,114 @@ _RAW_SENTENCES = [
     "DRINK WATER", "BRUSH TEETH", "WASH FACE", "GET DRESSED", "TAKE BATH",
 ]
 
-# Strip spaces and filter to A-Z only
-SENTENCES = [s.replace(" ", "") for s in _RAW_SENTENCES]
+# Robot commands from command_corpus_40.json — household robot interactions
+_ROBOT_COMMANDS = [
+    # give_object commands
+    "give me soap bottle", "bring me the bread", "hand me the apple",
+    "pass me the toilet paper", "fetch me a fork", "get me a dish sponge",
+    "I need the cup", "can you bring me the butter knife",
+    "please give me a box", "I want the spray bottle",
+    "could you get me a plunger", "grab me a bowl",
+    "bring the remote control here", "I would like the newspaper",
+    "hand me a baseball bat please", "pass the watch to me",
+    "get the spatula for me", "give me the credit card please",
+    "bring a tissue box over here", "fetch the pillow for me",
+    # go_to_location commands
+    "go to bed", "go to the bedroom", "head to the drawer",
+    "move to the fridge", "walk to the bathtub",
+    "navigate to the coffee table", "take me to the microwave",
+    "go over to the dining table", "let's go to the sink",
+    "proceed to the sofa", "head over to the armchair",
+    "I want to go to the stove", "go check the kitchen",
+    "go near the toilet", "walk over to the countertop",
+    "can you go to the dining room", "please go to the shelf",
+    "go towards the bathroom", "move over to the garbage can",
+    "go find the cabinet",
+]
+
+# Household task descriptions from alfworld_task_corpus_100.json
+_TASK_COMMANDS = [
+    "Put a cardboard box on a table",
+    "Fill a cup with water and place in the microwave",
+    "Put a candle on top of a dresser",
+    "Put the bowl with ladle in the cabinet",
+    "Put a cold wine bottle in the cabinet",
+    "Place a cup with a pencil in it on a book case shelf",
+    "move soap bottle from back of toilet to cabinet",
+    "Put a grey bowl with a black pen in it on the desk",
+    "Putting clean sliced lettuce on a table",
+    "Moving two vases from the fireplace to a side table",
+    "put cooked egg inside fridge",
+    "get a ring and turn on a lamp",
+    "Turn the lamp on while holding the keys",
+    "Take a apple and heat it put it back when finished",
+    "place pan with spatula on back corner of table",
+    "Examine a cushion by the light of a lamp",
+    "Place a heated cup into the refrigerator",
+    "To chill a pan and put it in the sink",
+    "To move two spray bottles to the back of the toilet",
+    "Put a heated egg on the counter",
+    "Pick up a credit card and turn a lamp off",
+    "place a cooled egg on the kitchen counter",
+    "Wash the lettuce on the table",
+    "place a clean mug in the coffee maker",
+    "To heat the apple",
+    "Look at a computer by lamp light",
+    "Get the keys from the round table",
+    "Clean the fork from the sink",
+    "Cool an egg in the fridge",
+    "Put a spray bottle in the bin",
+    "Rinse the lettuce and place it inside the refrigerator",
+    "Place a box on a couch",
+    "Put a cooked apple in a trash bin",
+    "Put a rinsed cloth in the bath tub",
+    "Place two heads of lettuce in a fridge",
+    "Place two credit cards on a chair",
+    "Put the washed rag into the bath tub",
+    "Move two forks to the sink",
+    "place a cooled egg inside the microwave",
+    "Read a book by lamp light",
+    "Put a blue vase in a safe",
+    "Examine a credit card by the light of the lamp on the desk",
+    "Throw out a heated slice of tomato",
+    "Put a heated tomato in the trash can",
+    "Place a cool tomato in the bin",
+    "Put a rinsed cloth in a cabinet",
+    "Place two towels into the tub",
+    "wash the spoon in the sink put it on the table",
+    "Put a clean drinking glass in the microwave",
+    "Put two yellow spray bottles in the trash can",
+    "Put a cooked piece of apple in a sink",
+    "Place clean lettuce in the fridge",
+    "Put the credit cards on the blue sofa",
+    "Place a frying pan with a tomato slice on a table",
+    "Move a knife in a mug to the microwave cart",
+    "Put a credit card on a couch",
+    "Put cooked potato slice in the sink",
+    "Microwave a chilled tomato",
+    "Put the heated slice apple in the trash bin",
+    "Put a cooked piece of bread on the table",
+    "Place a heated potato on a counter",
+    "Put a pillow from the couch on the chair",
+    "Put two towels in the sink",
+    "Turn the lamp on in the corner",
+    "place chilled lettuce in sink",
+    "Put a candle on the back of the toilet",
+    "Look at keys in the light of a lamp",
+    "Place both laptops on the counter",
+    "Collecting newspapers from the room",
+    "put two spoons on the counter by the microwave",
+    "Place a clean plate in the cabinet",
+    "Place a chilled pot on a stove top",
+    "Put a chilled tomato in the microwave",
+    "Place a laptop on the couch",
+    "Inspect a bowl by lamplight",
+]
+
+# Strip to A-Z only and deduplicate
+_ALL_RAW = _RAW_SENTENCES + _ROBOT_COMMANDS + _TASK_COMMANDS
+SENTENCES = list(dict.fromkeys(_to_alpha(s) for s in _ALL_RAW))
+SENTENCES = [s for s in SENTENCES if len(s) >= 3]
 SENTENCES = _filter_words(SENTENCES)
 
 
@@ -121,7 +232,7 @@ def sample_word(category_weights=None):
     Returns:
         (word_string, list_of_label_indices)
     """
-    weights = category_weights or {"common": 0.4, "bci": 0.2, "sentence": 0.2, "random": 0.2}
+    weights = category_weights or {"common": 0.3, "bci": 0.2, "sentence": 0.4, "random": 0.1}
     categories = list(weights.keys())
     probs = [weights[c] for c in categories]
     choice = random.choices(categories, weights=probs, k=1)[0]
@@ -183,7 +294,7 @@ class WordVocab:
             self.common = list(COMMON_WORDS)
             self.bci = list(BCI_PHRASES)
             self.sentence = list(SENTENCES)
-            self.weights = {"common": 0.3, "bci": 0.2, "sentence": 0.3, "random": 0.2}
+            self.weights = {"common": 0.3, "bci": 0.2, "sentence": 0.4, "random": 0.1}
 
     def _load_from_file(self, path):
         path = Path(path)

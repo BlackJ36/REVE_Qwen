@@ -347,7 +347,7 @@ class CandidateStage2Dataset(Dataset):
         self.vocab = word_vocab if word_vocab is not None else WordVocab()
 
         # Weights for data types
-        self.weights = weights or {"word": 0.5, "random": 0.2, "nl": 0.15, "error": 0.15}
+        self.weights = weights or {"word": 0.7, "random": 0.1, "nl": 0.1, "error": 0.1}
         self.types = list(self.weights.keys())
         self.type_probs = [self.weights[t] for t in self.types]
 
@@ -450,7 +450,9 @@ class CandidateStage2Dataset(Dataset):
         )
 
     def __len__(self):
-        avg_spells = (self.min_spells + self.max_spells) / 2
+        # Cap avg_spells estimate: most samples are short words (3-8 chars),
+        # only sentence/command category has longer ones (up to 50).
+        avg_spells = min((self.min_spells + self.max_spells) / 2, 10)
         return int(len(self.eeg_data) / avg_spells)
 
     def __getitem__(self, idx):

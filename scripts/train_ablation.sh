@@ -174,7 +174,7 @@ run_stage2() {
         --warmup_ratio 0.1 \
         --early_stopping_patience "$PATIENCE" \
         --min_spells 3 \
-        --max_spells 15 \
+        --max_spells 50 \
         --window_size 300 \
         --window_step 100 \
         --trial_duration "$DURATION" \
