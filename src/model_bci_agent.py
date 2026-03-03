@@ -110,12 +110,19 @@ class BCIAgentModel(nn.Module):
         torch.save(encoder_state, save_dir / "encoder_trainable.pt")
 
         if isinstance(self.qwen, PeftModel):
-            # Save LoRA adapter (works for both S1 LoRA and S2 LoRA)
-            self.qwen.save_pretrained(str(save_dir), **kwargs)
-
-            # S1 LoRA has no modules_to_save, so new token rows need separate save
             peft_cfg = self.qwen.peft_config.get("default", None)
-            if peft_cfg and not peft_cfg.modules_to_save:
+            has_modules_to_save = peft_cfg and peft_cfg.modules_to_save
+
+            # S1 LoRA: skip embedding save (we save new rows separately)
+            # S2 LoRA: let PEFT save modules_to_save (embed_tokens/lm_head)
+            save_kwargs = dict(kwargs)
+            if not has_modules_to_save:
+                save_kwargs["save_embedding_layers"] = False
+
+            self.qwen.save_pretrained(str(save_dir), **save_kwargs)
+
+            # S1 LoRA: save only new token rows separately (~260KB)
+            if not has_modules_to_save:
                 self._save_new_token_rows(save_dir)
         else:
             # Stage 1 without LoRA: save new token rows only
