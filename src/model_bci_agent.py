@@ -38,8 +38,8 @@ class BCIAgentModel(nn.Module):
         return self.qwen.get_input_embeddings()
 
     def forward(self, input_ids, attention_mask=None, labels=None,
-                eeg_windows=None, window_counts=None, **kwargs):
-        """Forward pass with EEG pad replacement.
+                eeg_windows=None, window_counts=None, loss_weights=None, **kwargs):
+        """Forward pass with EEG pad replacement and optional weighted loss.
 
         Args:
             input_ids: (B, L) token IDs with <|bci_pad|> placeholders
@@ -47,6 +47,8 @@ class BCIAgentModel(nn.Module):
             labels: (B, L) with -100 for non-target positions
             eeg_windows: (total_K, 62, T) all EEG windows concatenated across batch
             window_counts: (B,) number of EEG windows per sample
+            loss_weights: (B, L) per-position loss weights (e.g., 2.0 for EEG-only positions).
+                          When provided, overrides Qwen's built-in uniform CE loss.
         """
         embed_layer = self.qwen.get_input_embeddings()
         inputs_embeds = embed_layer(input_ids)
@@ -71,11 +73,37 @@ class BCIAgentModel(nn.Module):
                 inputs_embeds[i, pad_positions[:n]] = sample_tokens[:n].to(inputs_embeds.dtype)
                 offset += K_i
 
-        return self.qwen(
-            inputs_embeds=inputs_embeds,
-            attention_mask=attention_mask,
-            labels=labels,
-        )
+        if loss_weights is not None and labels is not None:
+            # Custom weighted loss: upweight EEG-only predictions
+            outputs = self.qwen(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+            )
+            logits = outputs.logits
+
+            # Causal LM shift
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            shift_weights = loss_weights[..., 1:].contiguous()
+
+            loss_fn = nn.CrossEntropyLoss(ignore_index=-100, reduction="none")
+            per_token_loss = loss_fn(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+            ).view(shift_labels.shape)
+
+            # Weighted sum, normalized by number of supervised tokens
+            weighted_loss = per_token_loss * shift_weights
+            n_supervised = (shift_labels != -100).sum().clamp(min=1)
+            outputs.loss = weighted_loss.sum() / n_supervised
+        else:
+            outputs = self.qwen(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                labels=labels,
+            )
+
+        return outputs
 
     @property
     def config(self):

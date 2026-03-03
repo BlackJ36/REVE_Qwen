@@ -6,10 +6,14 @@ Stage 1: Same classification task as BCIAgentStage1Dataset, but each spell
 Stage 2: Word-level spelling — assembles multi-spell sequences that spell
   real words, using label→trial mapping to find matching EEG data.
 
-Per-spell token format (two-step prediction):
-    [62×pad] <|bci_pred|> <|cand|><|tXX|> <|cand|><|tYY|> <|cand|><|tZZ|> <|tNN|> <|bci_trans|>
-             ^^^^^^^^^^^^                                                   ^^^^^
-             EEG-only supervised (logits[last_pad]→tid)                     Final supervised
+Per-spell token format (two-step prediction + character annotations):
+    [62×pad] <|bci_pred|> <|cand|>X<|tXX|> <|cand|>Y<|tYY|> <|cand|>Z<|tZZ|> <|tNN|>C <|bci_trans|>
+             ^^^^^^^^^^^^                                                       ^^^^^  ^
+             EEG-only supervised                                                Final  Char echo (supervised)
+
+Character annotations (X, Y, Z) show each candidate's keyboard character, enabling
+Qwen to leverage its language model prior (e.g., after seeing "HEL", predict "P").
+Character echo (C) after the target is supervised, teaching Qwen the target→char mapping.
 
 Candidates are in RANDOM order (no rank info, no confidence) to prevent
 position-based shortcut learning. The model must use EEG + language prior
@@ -72,6 +76,8 @@ class CandidateStage1Dataset(Dataset):
         decoder_type="fbcca",
         cand_dropout=0.0,
         eeg_only_labels=False,
+        echo_dropout=0.0,
+        eeg_loss_weight=1.0,
     ):
         self.eeg_dir = Path(eeg_dir)
         self.tokenizer = tokenizer
@@ -83,6 +89,8 @@ class CandidateStage1Dataset(Dataset):
         self.duration_scale = trial_duration_pts / 600.0
         self.cand_dropout = cand_dropout
         self.eeg_only_labels = eeg_only_labels
+        self.echo_dropout = echo_dropout
+        self.eeg_loss_weight = eeg_loss_weight
         self._dropout_count = 0
         self._total_spell_count = 0
 
@@ -164,6 +172,11 @@ class CandidateStage1Dataset(Dataset):
             for i, tok in TARGET_INDEX_TO_TOKEN.items()
         }
 
+        # Pre-tokenize keyboard characters for candidate annotations
+        self.char_ids = {}
+        for i, char in enumerate(KEYBOARD_CHARS):
+            self.char_ids[i] = tokenizer.encode(char, add_special_tokens=False)
+
         # Build prefix: system + user turn (tokenize once)
         prefix_messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -211,32 +224,37 @@ class CandidateStage1Dataset(Dataset):
             fbcca_candidates.append((top3_idx, top3_sc))
 
         eeg_windows = torch.stack(eeg_windows)  # (K, 62, window_size)
-        input_ids, labels = self._build_sequence(target_indices, fbcca_candidates)
+        input_ids, labels, loss_weights = self._build_sequence(target_indices, fbcca_candidates)
 
         return {
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
             "labels": torch.tensor(labels, dtype=torch.long),
+            "loss_weights": torch.tensor(loss_weights, dtype=torch.float32),
             "eeg_windows": eeg_windows.float(),
             "num_spells": K,
         }
 
     def _build_sequence(self, target_indices, fbcca_candidates):
-        """Build token sequence with two-step prediction + shuffled candidates.
+        """Build token sequence with two-step prediction + character-annotated candidates.
 
         Format per spell:
-            [62×pad] <|bci_pred|> [cand][tXX] [cand][tYY] [cand][tZZ] [target] [trans]
+            [62×pad] <|bci_pred|> [cand]X[tXX] [cand]Y[tYY] [cand]Z[tZZ] [target]C [trans]
 
         Labels (causal LM shift — logits[i] predicts labels[i+1]):
-            [-100]×62  [tid]       [-100]×6                            [tid]    [-100]
-                       ^EEG-only prediction (logits[last_pad] → pure EEG) ^Final prediction
+            [-100]×62  [tid]       [-100]×9                              [tid]  [C_id] [-100]
+                       ^EEG-only                                         ^Final ^Char echo
 
+        X,Y,Z = candidate characters (unsupervised context for language prior).
+        C = true target character (supervised, teaches target→char mapping).
         Candidates are in random order — model cannot use position to shortcut.
         """
         n = self.num_eeg_tokens
         K = len(target_indices)
+        w_eeg = self.eeg_loss_weight
 
         input_ids = list(self.prefix_ids)
         labels = [-100] * len(input_ids)
+        loss_weights = [0.0] * len(input_ids)
 
         for i in range(K):
             tid = self.target_ids[target_indices[i]]
@@ -244,11 +262,13 @@ class CandidateStage1Dataset(Dataset):
             # EEG pad tokens
             input_ids.extend([self.bci_pad_id] * n)
             labels.extend([-100] * n)
+            loss_weights.extend([0.0] * n)
 
             # Two-step prediction marker: EEG-only supervised point
             # logits[last_pad_pos] sees only EEG → must predict tid
             input_ids.append(self.bci_pred_id)
             labels.append(tid)
+            loss_weights.append(w_eeg)
 
             # Candidate dropout: replace with random indices
             top3_idx, top3_sc = fbcca_candidates[i]
@@ -261,29 +281,50 @@ class CandidateStage1Dataset(Dataset):
             shuffled = list(range(3))
             random.shuffle(shuffled)
 
-            # Decoder candidates: [cand][tXX] [cand][tYY] [cand][tZZ]
+            # Decoder candidates with character annotations: [cand]X[tXX] ...
             for j in shuffled:
                 input_ids.append(self.cand_id)
                 labels.append(-100)
+                loss_weights.append(0.0)
+                char_tokens = self.char_ids[top3_idx[j]]
+                input_ids.extend(char_tokens)
+                labels.extend([-100] * len(char_tokens))
+                loss_weights.extend([0.0] * len(char_tokens))
                 input_ids.append(self.target_ids[top3_idx[j]])
                 labels.append(-100)
+                loss_weights.append(0.0)
 
             # True target (Final supervised point — masked in eeg_only mode)
             input_ids.append(tid)
-            labels.append(-100 if self.eeg_only_labels else tid)
+            if self.eeg_only_labels:
+                labels.append(-100)
+                loss_weights.append(0.0)
+            else:
+                labels.append(tid)
+                loss_weights.append(1.0)
+
+            # Character echo (with dropout to prevent LM over-reliance)
+            if self.echo_dropout == 0 or random.random() >= self.echo_dropout:
+                char_tokens = self.char_ids[target_indices[i]]
+                input_ids.extend(char_tokens)
+                for ct in char_tokens:
+                    labels.append(ct)
+                    loss_weights.append(1.0)
 
             # Transition separator (except after last spell)
             if i < K - 1:
                 input_ids.append(self.bci_trans_id)
                 labels.append(-100)
+                loss_weights.append(0.0)
 
         # EOS
         eos_id = self.tokenizer.eos_token_id
         if eos_id is not None:
             input_ids.append(eos_id)
             labels.append(eos_id)
+            loss_weights.append(1.0)
 
-        return input_ids, labels
+        return input_ids, labels, loss_weights
 
 
 class CandidateStage2Dataset(Dataset):
@@ -325,6 +366,8 @@ class CandidateStage2Dataset(Dataset):
         decoder_type="fbcca",
         cand_dropout=0.0,
         eeg_only_labels=False,
+        echo_dropout=0.0,
+        eeg_loss_weight=1.0,
     ):
         self.eeg_dir = Path(eeg_dir)
         self.tokenizer = tokenizer
@@ -337,6 +380,8 @@ class CandidateStage2Dataset(Dataset):
         self.duration_scale = trial_duration_pts / 600.0
         self.cand_dropout = cand_dropout
         self.eeg_only_labels = eeg_only_labels
+        self.echo_dropout = echo_dropout
+        self.eeg_loss_weight = eeg_loss_weight
         self._dropout_count = 0
         self._total_spell_count = 0
 
@@ -443,6 +488,11 @@ class CandidateStage2Dataset(Dataset):
             for i, tok in TARGET_INDEX_TO_TOKEN.items()
         }
 
+        # Pre-tokenize keyboard characters for candidate annotations
+        self.char_ids = {}
+        for i, char in enumerate(KEYBOARD_CHARS):
+            self.char_ids[i] = tokenizer.encode(char, add_special_tokens=False)
+
         print(
             f"[{split}] CandidateStage2: {N} trials, "
             f"{len(self.group_keys)} groups, "
@@ -548,25 +598,28 @@ class CandidateStage2Dataset(Dataset):
         eeg_windows = torch.stack(eeg_windows)
 
         # Build chat template with streaming spelling format
-        input_ids, labels = self._build_spelling_sequence(
+        input_ids, labels, loss_weights = self._build_spelling_sequence(
             word, label_indices, fbcca_candidates,
         )
 
         return {
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
             "labels": torch.tensor(labels, dtype=torch.long),
+            "loss_weights": torch.tensor(loss_weights, dtype=torch.float32),
             "eeg_windows": eeg_windows.float(),
             "num_spells": len(label_indices),
         }
 
     def _build_spelling_sequence(self, word, target_indices, fbcca_candidates):
-        """Build multi-turn spelling sequence with two-step prediction + candidates.
+        """Build multi-turn spelling sequence with two-step + character annotations.
 
-        Same two-step format as CandidateStage1Dataset._build_sequence
-        but wrapped in a streaming spelling chat template.
+        Same format as CandidateStage1Dataset._build_sequence but wrapped in a
+        streaming spelling chat template. Character echoes build readable context
+        (e.g., "H...E...L") enabling Qwen's language prior for next-char prediction.
         """
         n = self.num_eeg_tokens
         K = len(target_indices)
+        w_eeg = self.eeg_loss_weight
 
         # Build prefix with spelling system prompt
         prefix_messages = [
@@ -578,6 +631,7 @@ class CandidateStage2Dataset(Dataset):
         )
         input_ids = self.tokenizer.encode(prefix_text, add_special_tokens=False)
         labels = [-100] * len(input_ids)
+        loss_weights = [0.0] * len(input_ids)
 
         # Each spell: pads + bci_pred + shuffled candidates + target + trans
         spelled = ""
@@ -587,10 +641,12 @@ class CandidateStage2Dataset(Dataset):
             # EEG pads
             input_ids.extend([self.bci_pad_id] * n)
             labels.extend([-100] * n)
+            loss_weights.extend([0.0] * n)
 
             # Two-step prediction marker: EEG-only supervised point
             input_ids.append(self.bci_pred_id)
             labels.append(tid)
+            loss_weights.append(w_eeg)
 
             # Candidate dropout: replace with random indices
             top3_idx, top3_sc = fbcca_candidates[i]
@@ -603,21 +659,41 @@ class CandidateStage2Dataset(Dataset):
             shuffled = list(range(3))
             random.shuffle(shuffled)
 
-            # Decoder candidates: [cand][tXX] [cand][tYY] [cand][tZZ]
+            # Decoder candidates with character annotations: [cand]X[tXX] ...
             for j in shuffled:
                 input_ids.append(self.cand_id)
                 labels.append(-100)
+                loss_weights.append(0.0)
+                char_tokens = self.char_ids[top3_idx[j]]
+                input_ids.extend(char_tokens)
+                labels.extend([-100] * len(char_tokens))
+                loss_weights.extend([0.0] * len(char_tokens))
                 input_ids.append(self.target_ids[top3_idx[j]])
                 labels.append(-100)
+                loss_weights.append(0.0)
 
             # True target (Final supervised point — masked in eeg_only mode)
             input_ids.append(tid)
-            labels.append(-100 if self.eeg_only_labels else tid)
+            if self.eeg_only_labels:
+                labels.append(-100)
+                loss_weights.append(0.0)
+            else:
+                labels.append(tid)
+                loss_weights.append(1.0)
+
+            # Character echo (with dropout to prevent LM over-reliance)
+            if self.echo_dropout == 0 or random.random() >= self.echo_dropout:
+                char_tokens = self.char_ids[target_indices[i]]
+                input_ids.extend(char_tokens)
+                for ct in char_tokens:
+                    labels.append(ct)
+                    loss_weights.append(1.0)
 
             # Transition
             if i < K - 1:
                 input_ids.append(self.bci_trans_id)
                 labels.append(-100)
+                loss_weights.append(0.0)
 
             spelled += KEYBOARD_CHARS[target_indices[i]]
 
@@ -626,8 +702,9 @@ class CandidateStage2Dataset(Dataset):
         if eos_id is not None:
             input_ids.append(eos_id)
             labels.append(eos_id)
+            loss_weights.append(1.0)
 
-        return input_ids, labels
+        return input_ids, labels, loss_weights
 
     def _make_nl(self):
         """Pure NL sample (no EEG)."""
@@ -655,9 +732,13 @@ class CandidateStage2Dataset(Dataset):
                     labels[j] = input_ids[j]
             current_pos = end_pos
 
+        # NL samples: uniform weight 1.0 for supervised positions
+        loss_weights = [1.0 if l != -100 else 0.0 for l in labels]
+
         return {
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
             "labels": torch.tensor(labels, dtype=torch.long),
+            "loss_weights": torch.tensor(loss_weights, dtype=torch.float32),
             "eeg_windows": torch.zeros(0, 62, self.window_size),
             "num_spells": 0,
         }
@@ -701,9 +782,13 @@ class CandidateStage2Dataset(Dataset):
                     labels[j] = input_ids[j]
             current_pos = end_pos
 
+        # Error samples: uniform weight 1.0 for supervised positions
+        loss_weights = [1.0 if l != -100 else 0.0 for l in labels]
+
         return {
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
             "labels": torch.tensor(labels, dtype=torch.long),
+            "loss_weights": torch.tensor(loss_weights, dtype=torch.float32),
             "eeg_windows": torch.zeros(0, 62, self.window_size),
             "num_spells": 0,
         }

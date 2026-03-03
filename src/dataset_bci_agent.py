@@ -493,10 +493,13 @@ class BCIAgentCollator:
     def __call__(self, features):
         max_len = max(f["input_ids"].size(0) for f in features)
         batch_size = len(features)
+        has_loss_weights = "loss_weights" in features[0]
 
         input_ids = torch.full((batch_size, max_len), self.pad_token_id, dtype=torch.long)
         labels = torch.full((batch_size, max_len), -100, dtype=torch.long)
         attention_mask = torch.zeros(batch_size, max_len, dtype=torch.long)
+        if has_loss_weights:
+            loss_weights = torch.zeros(batch_size, max_len, dtype=torch.float32)
 
         all_windows = []
         window_counts = []
@@ -507,6 +510,8 @@ class BCIAgentCollator:
             input_ids[i, offset:] = f["input_ids"]
             labels[i, offset:] = f["labels"]
             attention_mask[i, offset:] = 1
+            if has_loss_weights:
+                loss_weights[i, offset:] = f["loss_weights"]
 
             if f["eeg_windows"].numel() > 0:
                 all_windows.append(f["eeg_windows"])
@@ -519,10 +524,13 @@ class BCIAgentCollator:
             eeg_windows = torch.zeros(0, 62, features[0]["eeg_windows"].shape[-1] if features[0]["eeg_windows"].dim() > 1 else 300)
         window_counts = torch.tensor(window_counts, dtype=torch.long)
 
-        return {
+        batch = {
             "input_ids": input_ids,
             "labels": labels,
             "attention_mask": attention_mask,
             "eeg_windows": eeg_windows,
             "window_counts": window_counts,
         }
+        if has_loss_weights:
+            batch["loss_weights"] = loss_weights
+        return batch

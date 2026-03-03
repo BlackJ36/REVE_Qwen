@@ -41,6 +41,13 @@ def parse_args():
                         help="Candidate dropout rate (0.0-1.0). Randomly replaces decoder "
                              "candidates with noise during training to prevent shortcut learning. "
                              "Only used when --fbcca_mode=candidate. Recommended: 0.3")
+    parser.add_argument("--echo_dropout", type=float, default=0.0,
+                        help="Echo character dropout rate (0.0-1.0). Skips character echo "
+                             "after target to prevent LM prior from overriding EEG evidence. "
+                             "Only used when --fbcca_mode=candidate. Recommended: 0.3-0.5")
+    parser.add_argument("--eeg_loss_weight", type=float, default=1.0,
+                        help="Loss weight multiplier for EEG-only prediction positions. "
+                             "Values >1.0 upweight pure EEG decoding loss. Recommended: 2.0")
     # Legacy flags (backward compat)
     parser.add_argument("--use_fbcca", action="store_true", default=True,
                         help="Enable FBCCA FiLM modulation (default: True). "
@@ -161,6 +168,8 @@ def main():
             exclude_subjects=exclude_subjects,
             decoder_type=args.decoder_type,
             cand_dropout=args.cand_dropout,
+            echo_dropout=args.echo_dropout,
+            eeg_loss_weight=args.eeg_loss_weight,
             early_stopping_patience=args.early_stopping_patience,
             unfreeze_last_n=args.unfreeze_last_n,
             lora_rank=args.s1_lora_rank,
@@ -209,6 +218,8 @@ def main():
             exclude_subjects=exclude_subjects,
             decoder_type=args.decoder_type,
             cand_dropout=args.cand_dropout,
+            echo_dropout=args.echo_dropout,
+            eeg_loss_weight=args.eeg_loss_weight,
             early_stopping_patience=args.early_stopping_patience,
             unfreeze_last_n=args.unfreeze_last_n,
             reve_finetune_dir=args.reve_finetune_dir,

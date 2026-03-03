@@ -80,6 +80,7 @@ class BCIAgentTrainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         eeg_windows = inputs.pop("eeg_windows", None)
         window_counts = inputs.pop("window_counts", None)
+        loss_weights = inputs.pop("loss_weights", None)
 
         outputs = model(
             input_ids=inputs["input_ids"],
@@ -87,6 +88,7 @@ class BCIAgentTrainer(Trainer):
             labels=inputs["labels"],
             eeg_windows=eeg_windows if eeg_windows is not None and eeg_windows.numel() > 0 else None,
             window_counts=window_counts,
+            loss_weights=loss_weights,
         )
         loss = outputs.loss
         return (loss, outputs) if return_outputs else loss
@@ -154,6 +156,9 @@ def run_stage1_training(
     decoder_type="fbcca",
     # Candidate dropout (0.0 = off, 0.3 = 30% random candidates)
     cand_dropout=0.0,
+    # Echo dropout + EEG loss weighting (anti-LM-prior)
+    echo_dropout=0.0,
+    eeg_loss_weight=1.0,
     # Early stopping
     early_stopping_patience=5,
     # REVE unfreezing
@@ -205,6 +210,7 @@ def run_stage1_training(
     if fbcca_mode == "candidate":
         DatasetClass = CandidateStage1Dataset
         extra_kwargs = {"decoder_type": decoder_type, "cand_dropout": cand_dropout,
+                        "echo_dropout": echo_dropout, "eeg_loss_weight": eeg_loss_weight,
                         "eeg_only_labels": True}
     else:
         DatasetClass = BCIAgentStage1Dataset
@@ -225,7 +231,7 @@ def run_stage1_training(
         window_size=effective_window_size, window_step=window_step,
         exclude_subjects=exclude_subjects,
         trial_duration_pts=trial_duration_pts,
-        **{k: v for k, v in extra_kwargs.items() if k != "cand_dropout"},
+        **{k: v for k, v in extra_kwargs.items() if k not in ("cand_dropout", "echo_dropout", "eeg_loss_weight")},
     )
     collator = BCIAgentCollator(tokenizer)
 
@@ -347,6 +353,9 @@ def run_stage2_training(
     decoder_type="fbcca",
     # Candidate dropout (0.0 = off, 0.3 = 30% random candidates)
     cand_dropout=0.0,
+    # Echo dropout + EEG loss weighting (anti-LM-prior)
+    echo_dropout=0.0,
+    eeg_loss_weight=1.0,
     # Early stopping
     early_stopping_patience=5,
     # REVE unfreezing
@@ -401,7 +410,8 @@ def run_stage2_training(
         word_vocab = WordVocab(word_vocab_path)
         DatasetClass = CandidateStage2Dataset
         extra_kwargs = {"word_vocab": word_vocab, "decoder_type": decoder_type,
-                        "cand_dropout": cand_dropout}
+                        "cand_dropout": cand_dropout,
+                        "echo_dropout": echo_dropout, "eeg_loss_weight": eeg_loss_weight}
     else:
         DatasetClass = BCIAgentStage2Dataset
         extra_kwargs = {}
@@ -427,7 +437,7 @@ def run_stage2_training(
         window_size=effective_window_size, window_step=window_step,
         exclude_subjects=exclude_subjects,
         trial_duration_pts=trial_duration_pts,
-        **{k: v for k, v in extra_kwargs.items() if k != "cand_dropout"},
+        **{k: v for k, v in extra_kwargs.items() if k not in ("cand_dropout", "echo_dropout", "eeg_loss_weight")},
     )
     collator = BCIAgentCollator(tokenizer)
 

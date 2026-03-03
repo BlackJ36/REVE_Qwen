@@ -62,6 +62,10 @@ S2_LORA_ALPHA=${S2_LORA_ALPHA:-64}
 # Early stopping
 PATIENCE=${PATIENCE:-5}
 
+# Anti-LM-prior (candidate mode only)
+ECHO_DROPOUT=${ECHO_DROPOUT:-0.0}
+EEG_LOSS_WEIGHT=${EEG_LOSS_WEIGHT:-1.0}
+
 # --- Print config ---
 echo "=== Ablation Config ==="
 echo "GPUs:        ${NUM_GPUS}"
@@ -69,6 +73,8 @@ echo "Target batch: ${TARGET_BATCH}"
 echo "Stage 1:     bs=${S1_BS} × accum=${S1_ACCUM} × ${NUM_GPUS}gpu = $((S1_BS * S1_ACCUM * NUM_GPUS)) eff, ${S1_EPOCHS} epochs, lr=${S1_LR}, enc_lr=${S1_ENC_LR}"
 echo "Stage 2:     bs=${S2_BS} × accum=${S2_ACCUM} × ${NUM_GPUS}gpu = $((S2_BS * S2_ACCUM * NUM_GPUS)) eff, ${S2_EPOCHS} epochs, lr=${S2_LR}, enc_lr=${S2_ENC_LR}, rank=${S2_LORA_RANK}"
 echo "Patience:    ${PATIENCE}"
+echo "Echo dropout: ${ECHO_DROPOUT}"
+echo "EEG loss wt:  ${EEG_LOSS_WEIGHT}"
 echo "========================"
 echo ""
 
@@ -145,6 +151,8 @@ run_stage1() {
         --window_size 300 \
         --window_step 100 \
         --trial_duration "$DURATION" \
+        --echo_dropout "$ECHO_DROPOUT" \
+        --eeg_loss_weight "$EEG_LOSS_WEIGHT" \
         --deepspeed configs/ds_zero2.json
 }
 
@@ -190,6 +198,8 @@ run_stage2() {
         --window_size 300 \
         --window_step 100 \
         --trial_duration "$DURATION" \
+        --echo_dropout "$ECHO_DROPOUT" \
+        --eeg_loss_weight "$EEG_LOSS_WEIGHT" \
         --deepspeed configs/ds_zero2.json
 }
 
