@@ -156,6 +156,8 @@ def run_stage1_training(
     cand_dropout=0.0,
     # Early stopping
     early_stopping_patience=5,
+    # REVE unfreezing
+    unfreeze_last_n=0,
     # DeepSpeed
     deepspeed_config="configs/ds_zero2.json",
 ):
@@ -177,7 +179,7 @@ def run_stage1_training(
     if effective_window_size != window_size:
         print(f"  window_size clamped: {window_size} -> {effective_window_size} (trial={trial_duration_pts}pts)")
 
-    print(f"\nBuilding model (Stage 1, encoder={encoder_type}, fbcca_mode={fbcca_mode})...")
+    print(f"\nBuilding model (Stage 1, encoder={encoder_type}, fbcca_mode={fbcca_mode}, unfreeze={unfreeze_last_n})...")
     model, tokenizer = build_bci_agent_model(
         model_name=model_name,
         from_modelscope=from_modelscope,
@@ -186,6 +188,7 @@ def run_stage1_training(
         encoder_type=encoder_type,
         fbcca_mode=fbcca_mode,
         window_size=effective_window_size,
+        unfreeze_last_n=unfreeze_last_n,
     )
 
     print("\nLoading datasets...")
@@ -336,6 +339,8 @@ def run_stage2_training(
     cand_dropout=0.0,
     # Early stopping
     early_stopping_patience=5,
+    # REVE unfreezing
+    unfreeze_last_n=0,
     # DeepSpeed
     deepspeed_config="configs/ds_zero2.json",
 ):
@@ -359,7 +364,7 @@ def run_stage2_training(
     if effective_window_size != window_size:
         print(f"  window_size clamped: {window_size} -> {effective_window_size} (trial={trial_duration_pts}pts)")
 
-    print(f"\nBuilding model (Stage 2, encoder={encoder_type}, fbcca_mode={fbcca_mode})...")
+    print(f"\nBuilding model (Stage 2, encoder={encoder_type}, fbcca_mode={fbcca_mode}, unfreeze={unfreeze_last_n})...")
     model, tokenizer = build_bci_agent_model(
         model_name=model_name,
         from_modelscope=from_modelscope,
@@ -372,6 +377,7 @@ def run_stage2_training(
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
         window_size=effective_window_size,
+        unfreeze_last_n=unfreeze_last_n,
     )
 
     # Build word vocab for candidate mode

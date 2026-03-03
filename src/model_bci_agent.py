@@ -158,6 +158,7 @@ def build_bci_agent_model(
     window_size=300,
     sfreq=200.0,
     encoder_dropout=0.1,
+    unfreeze_last_n=0,
 ):
     """Build the BCI Agent model for Stage 1 or Stage 2.
 
@@ -259,6 +260,7 @@ def build_bci_agent_model(
         dropout=encoder_dropout,
         encoder_type=encoder_type,
         use_fbcca=encoder_use_fbcca,
+        unfreeze_last_n=unfreeze_last_n,
     )
 
     # --- Load Stage 1 weights for Stage 2 ---

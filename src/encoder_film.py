@@ -111,6 +111,7 @@ def build_film_encoder(
     encoder_type="reve",
     use_fbcca=True,
     n_chans=62,
+    unfreeze_last_n=0,
 ):
     """Build a FiLMHybridEncoder with configurable backbone and FBCCA.
 
@@ -147,7 +148,7 @@ def build_film_encoder(
         backbone = REVEWithUnfreeze(
             reve_model, pos_bank,
             channel_names=VALID_CHANNEL_NAMES,
-            unfreeze_last_n=0,
+            unfreeze_last_n=unfreeze_last_n,
         )
         backbone_dim = 512
 
@@ -157,7 +158,7 @@ def build_film_encoder(
         backbone = build_labram_wrapper(
             n_chans=n_chans,
             n_times=window_size,
-            unfreeze_last_n=0,
+            unfreeze_last_n=unfreeze_last_n,
         )
         backbone_dim = backbone.embed_dim  # 200
 

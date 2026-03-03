@@ -24,6 +24,8 @@ def parse_args():
     # Encoder backbone
     parser.add_argument("--encoder_type", type=str, default="reve", choices=["reve", "labram"],
                         help="EEG encoder backbone: 'reve' (512d) or 'labram' (200d)")
+    parser.add_argument("--unfreeze_last_n", type=int, default=0,
+                        help="Unfreeze last N transformer layers of REVE/LaBraM backbone (default: 0 = frozen)")
     parser.add_argument("--fbcca_mode", type=str, default=None,
                         choices=["film", "candidate", "none"],
                         help="FBCCA integration: 'film' (FiLM modulation), "
@@ -150,6 +152,7 @@ def main():
             decoder_type=args.decoder_type,
             cand_dropout=args.cand_dropout,
             early_stopping_patience=args.early_stopping_patience,
+            unfreeze_last_n=args.unfreeze_last_n,
             deepspeed_config=args.deepspeed,
         )
 
@@ -194,6 +197,7 @@ def main():
             decoder_type=args.decoder_type,
             cand_dropout=args.cand_dropout,
             early_stopping_patience=args.early_stopping_patience,
+            unfreeze_last_n=args.unfreeze_last_n,
             deepspeed_config=args.deepspeed,
         )
 
