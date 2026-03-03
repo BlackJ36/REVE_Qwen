@@ -503,7 +503,7 @@ class CandidateStage2Dataset(Dataset):
 
     def _make_random_sequence(self):
         """Random char sequence — forces model to rely on EEG, not LM."""
-        length = random.randint(self.min_spells, self.max_spells)
+        length = random.randint(self.min_spells, min(self.max_spells, 10))
         word, label_indices = self.vocab.random_sequence(length)
 
         group_key = self._find_group_for_labels(label_indices)
