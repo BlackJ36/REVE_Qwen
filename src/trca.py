@@ -256,17 +256,11 @@ class FBTRCAClassifier:
             trca.fit(filtered, labels_cal)
             self.models.append(trca)
 
-    @torch.no_grad()
-    def predict(self, eeg_test, ensemble=False):
-        """Classify test trials using FBTRCA.
-
-        Args:
-            eeg_test: (B, C, T) raw test EEG (NOT pre-filtered)
-            ensemble: if True, use ensemble TRCA within each sub-band
+    def _compute_weighted_corr(self, eeg_test, ensemble=False):
+        """Compute weighted correlation scores across all sub-bands.
 
         Returns:
-            top3_indices: (B, 3) int64
-            top3_scores:  (B, 3) float32
+            weighted_corr: (B, n_classes) full correlation scores
         """
         B = eeg_test.shape[0]
         device = eeg_test.device
@@ -279,13 +273,49 @@ class FBTRCAClassifier:
             corr = self.models[band_idx].predict_correlations(filtered, ensemble=ensemble)
             weighted_corr += weights[band_idx] * corr
 
+        return weighted_corr
+
+    @torch.no_grad()
+    def predict(self, eeg_test, ensemble=False):
+        """Classify test trials using FBTRCA.
+
+        Args:
+            eeg_test: (B, C, T) raw test EEG (NOT pre-filtered)
+            ensemble: if True, use ensemble TRCA within each sub-band
+
+        Returns:
+            top3_indices: (B, 3) int64
+            top3_scores:  (B, 3) float32
+        """
+        weighted_corr = self._compute_weighted_corr(eeg_test, ensemble=ensemble)
         top3_scores, top3_indices = weighted_corr.topk(3, dim=-1)
         return top3_indices.to(torch.int64), top3_scores.float()
+
+    @torch.no_grad()
+    def predict_full(self, eeg_test, ensemble=False):
+        """Classify test trials and return full 40-dim correlation scores.
+
+        Used for knowledge distillation: the full score distribution serves
+        as soft targets for training REVE's linear head.
+
+        Args:
+            eeg_test: (B, C, T) raw test EEG (NOT pre-filtered)
+            ensemble: if True, use ensemble TRCA within each sub-band
+
+        Returns:
+            full_scores:  (B, 40) float32 — complete correlation scores
+            top3_indices: (B, 3) int64
+            top3_scores:  (B, 3) float32
+        """
+        weighted_corr = self._compute_weighted_corr(eeg_test, ensemble=ensemble)
+        top3_scores, top3_indices = weighted_corr.topk(3, dim=-1)
+        return weighted_corr.float(), top3_indices.to(torch.int64), top3_scores.float()
 
 
 def leave_one_block_out_trca(eeg_data, labels, subject_ids, block_ids,
                              trial_duration_pts=600, sfreq=200.0,
-                              ensemble=True, device="cuda", batch_size=256):
+                             ensemble=True, device="cuda", batch_size=256,
+                             return_full_scores=False):
     """Evaluate FBTRCA using leave-one-block-out per subject.
 
     For each subject, each block is held out in turn while the remaining
@@ -301,10 +331,12 @@ def leave_one_block_out_trca(eeg_data, labels, subject_ids, block_ids,
         ensemble: if True, use ensemble TRCA
         device: torch device string
         batch_size: batch size for prediction
+        return_full_scores: if True, also return full 40-dim scores for KD
 
     Returns:
         all_preds: (N, 3) top-3 predicted indices
         all_scores: (N, 3) top-3 correlation scores
+        all_full_scores: (N, 40) full correlation scores (only if return_full_scores=True)
     """
     N = len(labels)
     total_T = eeg_data.shape[2]
@@ -315,6 +347,8 @@ def leave_one_block_out_trca(eeg_data, labels, subject_ids, block_ids,
 
     all_preds = torch.full((N, 3), -1, dtype=torch.int64)
     all_scores = torch.zeros(N, 3, dtype=torch.float32)
+    if return_full_scores:
+        all_full_scores = torch.zeros(N, 40, dtype=torch.float32)
 
     unique_subjects = subject_ids.unique().sort().values
 
@@ -348,10 +382,15 @@ def leave_one_block_out_trca(eeg_data, labels, subject_ids, block_ids,
             # Predict test trials in batches
             test_preds_list = []
             test_scores_list = []
+            test_full_list = []
             for start in range(0, n_test, batch_size):
                 end = min(start + batch_size, n_test)
                 batch = test_eeg[start:end]
-                preds, scores = fbtrca.predict(batch, ensemble=ensemble)
+                if return_full_scores:
+                    full, preds, scores = fbtrca.predict_full(batch, ensemble=ensemble)
+                    test_full_list.append(full.cpu())
+                else:
+                    preds, scores = fbtrca.predict(batch, ensemble=ensemble)
                 test_preds_list.append(preds.cpu())
                 test_scores_list.append(scores.cpu())
 
@@ -362,10 +401,13 @@ def leave_one_block_out_trca(eeg_data, labels, subject_ids, block_ids,
             global_test_indices = s_indices[test_mask.nonzero(as_tuple=True)[0]]
             all_preds[global_test_indices] = test_preds
             all_scores[global_test_indices] = test_scores
+            if return_full_scores:
+                all_full_scores[global_test_indices] = torch.cat(test_full_list)
 
-        n_done = (all_preds[:, 0] >= 0).sum().item()
         acc = (all_preds[s_mask, 0] == labels[s_mask]).float().mean().item()
         print(f"  S{sid.item():02d}: {s_mask.sum().item()} trials, "
               f"{'eTRCA' if ensemble else 'TRCA'} acc={acc:.1%}")
 
+    if return_full_scores:
+        return all_preds, all_scores, all_full_scores
     return all_preds, all_scores

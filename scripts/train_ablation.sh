@@ -6,7 +6,7 @@
 #   bash scripts/train_ablation.sh s2 [experiment] [duration]   # Stage 2 only (needs S1 checkpoint)
 #   bash scripts/train_ablation.sh all [experiment] [duration]   # Stage 1 → Stage 2
 #
-# experiment: reve_fbcca | reve_candidate | reve_etrca | reve_only | labram_fbcca | labram_only | all (default)
+# experiment: reve_fbcca | reve_candidate | reve_etrca | reve_only | labram_fbcca | labram_only | reve_ft_etrca | all (default)
 # duration: trial duration in seconds (default: 3.0). E.g. 1.0, 1.5, 2.0, 3.0
 #
 # GPU selection:
@@ -85,6 +85,7 @@ CONFIGS=(
     "reve_only:reve:--fbcca_mode none"
     "labram_fbcca:labram:--fbcca_mode film"
     "labram_only:labram:--fbcca_mode none"
+    "reve_ft_etrca:reve:--fbcca_mode candidate --decoder_type etrca --s1_lora_rank 16 --reve_finetune_dir output_reve_finetune"
 )
 
 run_stage1() {
@@ -103,6 +104,17 @@ run_stage1() {
         if [ ! -f "$needed_file" ]; then
             echo "ERROR: Precomputed decoder data not found: ${needed_file}"
             echo "  Run: ${gen_cmd}"
+            return 1
+        fi
+    fi
+
+    # Fine-tuned REVE requires finetune_reve.py checkpoint
+    if [[ "$fbcca_flag" == *"reve_finetune_dir"* ]]; then
+        local ft_dir
+        ft_dir=$(echo "$fbcca_flag" | grep -oP '(?<=--reve_finetune_dir )\S+')
+        if [ -n "$ft_dir" ] && [ ! -d "$ft_dir/reve_lora" ]; then
+            echo "ERROR: Fine-tuned REVE checkpoint not found: ${ft_dir}/reve_lora"
+            echo "  Run: python scripts/finetune_reve.py --phase both --output_dir ${ft_dir}"
             return 1
         fi
     fi

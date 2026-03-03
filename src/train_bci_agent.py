@@ -161,6 +161,8 @@ def run_stage1_training(
     # S1 LoRA (0 = no LoRA, >0 = apply LoRA so Qwen attention adapts to EEG tokens)
     lora_rank=0,
     lora_alpha=32,
+    # Fine-tuned REVE
+    reve_finetune_dir=None,
     # DeepSpeed
     deepspeed_config="configs/ds_zero2.json",
 ):
@@ -183,7 +185,8 @@ def run_stage1_training(
         print(f"  window_size clamped: {window_size} -> {effective_window_size} (trial={trial_duration_pts}pts)")
 
     lora_str = f", lora_rank={lora_rank}" if lora_rank > 0 else ""
-    print(f"\nBuilding model (Stage 1, encoder={encoder_type}, fbcca_mode={fbcca_mode}, unfreeze={unfreeze_last_n}{lora_str})...")
+    ft_str = f", reve_ft={reve_finetune_dir}" if reve_finetune_dir else ""
+    print(f"\nBuilding model (Stage 1, encoder={encoder_type}, fbcca_mode={fbcca_mode}, unfreeze={unfreeze_last_n}{lora_str}{ft_str})...")
     model, tokenizer = build_bci_agent_model(
         model_name=model_name,
         from_modelscope=from_modelscope,
@@ -195,6 +198,7 @@ def run_stage1_training(
         unfreeze_last_n=unfreeze_last_n,
         lora_rank=lora_rank,
         lora_alpha=lora_alpha,
+        reve_finetune_dir=reve_finetune_dir,
     )
 
     print("\nLoading datasets...")
@@ -347,6 +351,8 @@ def run_stage2_training(
     early_stopping_patience=5,
     # REVE unfreezing
     unfreeze_last_n=0,
+    # Fine-tuned REVE
+    reve_finetune_dir=None,
     # DeepSpeed
     deepspeed_config="configs/ds_zero2.json",
 ):
@@ -370,7 +376,8 @@ def run_stage2_training(
     if effective_window_size != window_size:
         print(f"  window_size clamped: {window_size} -> {effective_window_size} (trial={trial_duration_pts}pts)")
 
-    print(f"\nBuilding model (Stage 2, encoder={encoder_type}, fbcca_mode={fbcca_mode}, unfreeze={unfreeze_last_n})...")
+    ft_str = f", reve_ft={reve_finetune_dir}" if reve_finetune_dir else ""
+    print(f"\nBuilding model (Stage 2, encoder={encoder_type}, fbcca_mode={fbcca_mode}, unfreeze={unfreeze_last_n}{ft_str})...")
     model, tokenizer = build_bci_agent_model(
         model_name=model_name,
         from_modelscope=from_modelscope,
@@ -384,6 +391,7 @@ def run_stage2_training(
         lora_dropout=lora_dropout,
         window_size=effective_window_size,
         unfreeze_last_n=unfreeze_last_n,
+        reve_finetune_dir=reve_finetune_dir,
     )
 
     # Build word vocab for candidate mode

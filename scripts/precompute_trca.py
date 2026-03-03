@@ -11,6 +11,7 @@ Usage:
     python scripts/precompute_trca.py --eeg_dir data/eeg_tensors --trial_duration 2.0
     python scripts/precompute_trca.py --eeg_dir data/eeg_tensors --durations 1.0 1.5 2.0 3.0
     python scripts/precompute_trca.py --eeg_dir data/eeg_tensors --ensemble  # use eTRCA
+    python scripts/precompute_trca.py --ensemble --save_full_scores  # for KD
 
 Output per split:
     {eeg_dir}/{split}_trca.pt       (600pt, backward compatible)
@@ -37,7 +38,8 @@ def trca_output_filename(split, trial_duration_pts, ensemble=False):
 
 
 def precompute_split(eeg_dir, split, window_size, window_step, device,
-                     trial_duration_pts=600, ensemble=False, batch_size=256):
+                     trial_duration_pts=600, ensemble=False, batch_size=256,
+                     save_full_scores=False):
     """Precompute TRCA top-3 for one split via leave-one-block-out."""
     eeg_path = eeg_dir / f"{split}_eeg.pt"
     if not eeg_path.exists():
@@ -58,14 +60,19 @@ def precompute_split(eeg_dir, split, window_size, window_step, device,
           f"({effective_T/200:.1f}s, Δf={freq_res:.2f}Hz)")
 
     # Run leave-one-block-out TRCA
-    all_preds, all_scores = leave_one_block_out_trca(
+    trca_result = leave_one_block_out_trca(
         eeg_data, labels, subject_ids, block_ids,
         trial_duration_pts=trial_duration_pts,
         sfreq=200.0,
         ensemble=ensemble,
         device=device,
         batch_size=batch_size,
+        return_full_scores=save_full_scores,
     )
+    if save_full_scores:
+        all_preds, all_scores, all_full_scores = trca_result
+    else:
+        all_preds, all_scores = trca_result
 
     # Compute window offsets for dataset compatibility
     effective_window_size = min(window_size, effective_T)
@@ -89,6 +96,17 @@ def precompute_split(eeg_dir, split, window_size, window_step, device,
         "top3_scores": all_top3_scores,
     }, out_path)
     print(f"  Saved: {out_path} ({all_top3_indices.shape})")
+
+    # Save full scores for knowledge distillation (per-trial, no offset broadcast)
+    if save_full_scores:
+        full_filename = out_filename.replace(".pt", "_full.pt")
+        full_path = eeg_dir / full_filename
+        torch.save({
+            "full_scores": all_full_scores,       # (N, 40)
+            "top3_indices": all_preds,             # (N, 3)
+            "top3_scores": all_scores,             # (N, 3)
+        }, full_path)
+        print(f"  Saved full scores: {full_path} ({all_full_scores.shape})")
 
     # Accuracy stats
     valid_mask = all_preds[:, 0] >= 0
@@ -117,6 +135,8 @@ def main():
                         help="Batch-precompute multiple durations, e.g. 1.0 1.5 2.0 3.0")
     parser.add_argument("--ensemble", action="store_true",
                         help="Use ensemble TRCA (eTRCA) instead of standard TRCA")
+    parser.add_argument("--save_full_scores", action="store_true",
+                        help="Save full 40-dim correlation scores for knowledge distillation")
     args = parser.parse_args()
 
     eeg_dir = Path(args.eeg_dir)
@@ -141,6 +161,7 @@ def main():
                 trial_duration_pts=trial_duration_pts,
                 ensemble=args.ensemble,
                 batch_size=args.batch_size,
+                save_full_scores=args.save_full_scores,
             )
 
     print("\nDone.")

@@ -175,6 +175,8 @@ def build_bci_agent_model(
     sfreq=200.0,
     encoder_dropout=0.1,
     unfreeze_last_n=0,
+    # Fine-tuned REVE (from finetune_reve.py)
+    reve_finetune_dir=None,
 ):
     """Build the BCI Agent model for Stage 1 or Stage 2.
 
@@ -330,6 +332,7 @@ def build_bci_agent_model(
         encoder_type=encoder_type,
         use_fbcca=encoder_use_fbcca,
         unfreeze_last_n=unfreeze_last_n,
+        reve_finetune_dir=reve_finetune_dir,
     )
 
     # --- Load Stage 1 encoder weights for Stage 2 ---

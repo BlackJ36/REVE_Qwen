@@ -26,6 +26,9 @@ def parse_args():
                         help="EEG encoder backbone: 'reve' (512d) or 'labram' (200d)")
     parser.add_argument("--unfreeze_last_n", type=int, default=0,
                         help="Unfreeze last N transformer layers of REVE/LaBraM backbone (default: 0 = frozen)")
+    parser.add_argument("--reve_finetune_dir", type=str, default=None,
+                        help="Directory with fine-tuned REVE LoRA + pooling (from finetune_reve.py). "
+                             "Merges LoRA into base weights at load time (zero runtime overhead).")
     parser.add_argument("--fbcca_mode", type=str, default=None,
                         choices=["film", "candidate", "none"],
                         help="FBCCA integration: 'film' (FiLM modulation), "
@@ -162,6 +165,7 @@ def main():
             unfreeze_last_n=args.unfreeze_last_n,
             lora_rank=args.s1_lora_rank,
             lora_alpha=args.s1_lora_alpha,
+            reve_finetune_dir=args.reve_finetune_dir,
             deepspeed_config=args.deepspeed,
         )
 
@@ -207,6 +211,7 @@ def main():
             cand_dropout=args.cand_dropout,
             early_stopping_patience=args.early_stopping_patience,
             unfreeze_last_n=args.unfreeze_last_n,
+            reve_finetune_dir=args.reve_finetune_dir,
             deepspeed_config=args.deepspeed,
         )
 

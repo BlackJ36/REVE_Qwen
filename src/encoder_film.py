@@ -112,6 +112,7 @@ def build_film_encoder(
     use_fbcca=True,
     n_chans=62,
     unfreeze_last_n=0,
+    reve_finetune_dir=None,
 ):
     """Build a FiLMHybridEncoder with configurable backbone and FBCCA.
 
@@ -124,6 +125,9 @@ def build_film_encoder(
         encoder_type: "reve" or "labram"
         use_fbcca: whether to include FBCCA FiLM modulation
         n_chans: number of EEG channels
+        reve_finetune_dir: directory containing REVE LoRA + pooling from finetune_reve.py.
+            When provided, loads and merges LoRA into REVE base weights (zero runtime overhead).
+            Only applicable for encoder_type="reve".
 
     Returns:
         FiLMHybridEncoder instance
@@ -151,6 +155,39 @@ def build_film_encoder(
             unfreeze_last_n=unfreeze_last_n,
         )
         backbone_dim = 512
+
+        # Load and merge fine-tuned REVE LoRA (from finetune_reve.py)
+        if reve_finetune_dir is not None:
+            import torch
+
+            from peft import PeftModel as PeftModelClass
+
+            ft_dir = Path(reve_finetune_dir)
+            lora_dir = ft_dir / "reve_lora"
+            pooling_path = ft_dir / "reve_pooling.pt"
+
+            if lora_dir.exists():
+                print(f"Loading fine-tuned REVE LoRA from {lora_dir}")
+                backbone.reve = PeftModelClass.from_pretrained(backbone.reve, str(lora_dir))
+                backbone.reve = backbone.reve.merge_and_unload()
+                print("  Merged LoRA into REVE base weights")
+            else:
+                print(f"WARNING: REVE LoRA not found at {lora_dir}")
+
+            if pooling_path.exists():
+                print(f"Loading fine-tuned pooling from {pooling_path}")
+                pooling_state = torch.load(pooling_path, map_location="cpu", weights_only=True)
+                for name, param in pooling_state.items():
+                    parts = name.split(".")
+                    obj = backbone.reve
+                    for part in parts:
+                        obj = getattr(obj, part)
+                    obj.data.copy_(param)
+                print("  Restored cls_query_token + ln")
+
+            # Re-freeze everything (fine-tuned weights are now baked in)
+            backbone.reve.requires_grad_(False)
+            print("  REVE re-frozen with fine-tuned weights (zero runtime overhead)")
 
     elif encoder_type == "labram":
         from .encoder_labram import build_labram_wrapper
