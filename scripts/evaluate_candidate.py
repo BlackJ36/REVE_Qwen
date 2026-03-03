@@ -75,24 +75,22 @@ def load_model_for_inference(
         model.encoder.load_state_dict(state_dict, strict=False)
         print(f"Loaded S1 encoder from {enc_path}")
 
-    # Load S1 Qwen weights (LoRA or embeddings)
+    # Load S1 Qwen weights: merge LoRA (if exists) + restore new token rows (if exists)
     if (s1_dir / "adapter_config.json").exists():
-        # S1 used LoRA — load and merge
         model.qwen = PeftModelClass.from_pretrained(model.qwen, str(s1_dir))
         model.qwen = model.qwen.merge_and_unload()
         print(f"Loaded and merged S1 LoRA from {s1_dir}")
-    else:
-        # Legacy: load qwen_trainable.pt
-        qwen_path = s1_dir / "qwen_trainable.pt"
-        if qwen_path.exists():
-            qwen_state = torch.load(qwen_path, map_location="cpu", weights_only=True)
-            ovs = model.original_vocab_size
-            if "embed_tokens.new_rows" in qwen_state:
-                model.qwen.get_input_embeddings().weight.data[ovs:] = qwen_state["embed_tokens.new_rows"]
-                print(f"  Restored {qwen_state['embed_tokens.new_rows'].shape[0]} new token embeddings")
-            if "lm_head.new_rows" in qwen_state:
-                model.qwen.lm_head.weight.data[ovs:] = qwen_state["lm_head.new_rows"]
-                print(f"  Restored lm_head new token rows")
+
+    qwen_path = s1_dir / "qwen_trainable.pt"
+    if qwen_path.exists():
+        qwen_state = torch.load(qwen_path, map_location="cpu", weights_only=True)
+        ovs = model.original_vocab_size
+        if "embed_tokens.new_rows" in qwen_state:
+            model.qwen.get_input_embeddings().weight.data[ovs:] = qwen_state["embed_tokens.new_rows"]
+            print(f"  Restored {qwen_state['embed_tokens.new_rows'].shape[0]} new token embeddings")
+        if "lm_head.new_rows" in qwen_state:
+            model.qwen.lm_head.weight.data[ovs:] = qwen_state["lm_head.new_rows"]
+            print(f"  Restored lm_head new token rows")
 
     # Step 3: Apply trained LoRA from S2 checkpoint
     if (checkpoint_dir / "adapter_config.json").exists():
