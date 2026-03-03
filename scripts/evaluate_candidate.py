@@ -78,12 +78,21 @@ def load_model_for_inference(
         model.encoder.load_state_dict(state_dict, strict=False)
         print(f"Loaded S1 encoder from {enc_path}")
 
-    # Step 3: Merge S1 LoRA (if exists) + restore embeddings
+    # Step 3: Merge S1 LoRA (if exists)
     if (s1_dir / "adapter_config.json").exists():
         model.qwen = PeftModelClass.from_pretrained(model.qwen, str(s1_dir))
         model.qwen = model.qwen.merge_and_unload()
         print(f"Loaded and merged S1 LoRA from {s1_dir}")
 
+        # merge_and_unload returns Qwen3ForCausalLM but leaves peft_config attribute.
+        # Must remove it so S2 from_pretrained doesn't think it's still a PeftModel.
+        for attr in ("peft_config", "_hf_peft_config_loaded", "base_model_torch_dtype"):
+            try:
+                delattr(model.qwen, attr)
+            except (AttributeError, TypeError):
+                pass
+
+    # Step 4: Restore S1 embeddings
     qwen_path = s1_dir / "qwen_trainable.pt"
     if qwen_path.exists():
         qwen_state = torch.load(qwen_path, map_location="cpu", weights_only=True)
@@ -95,7 +104,7 @@ def load_model_for_inference(
             model.qwen.lm_head.weight.data[ovs:] = qwen_state["lm_head.new_rows"]
             print(f"  Restored lm_head new token rows")
 
-    # Step 4: Load S2 adapter (PeftModel.from_pretrained handles modules_to_save correctly)
+    # Step 5: Load S2 adapter
     embed_before = model.qwen.get_input_embeddings().weight.data[-47:].norm().item()
     print(f"Loading S2 adapter from {checkpoint_dir}")
     model.qwen = PeftModelClass.from_pretrained(model.qwen, str(checkpoint_dir))
@@ -103,20 +112,17 @@ def load_model_for_inference(
     print(f"  Embed norm: {embed_before:.4f} -> {embed_after:.4f} "
           f"({'OK' if abs(embed_after - embed_before) > 0.01 else 'WARNING: unchanged'})")
 
-    # Step 5: Merge S2 LoRA for faster inference
-    model.qwen = model.qwen.merge_and_unload()
-    print("Merged S2 LoRA into base model")
+    # Step 6: Merge S2 LoRA for faster inference
+    if hasattr(model.qwen, "merge_and_unload"):
+        model.qwen = model.qwen.merge_and_unload()
+        print("Merged S2 LoRA into base model")
 
-    # Step 3: Override encoder with S2 weights
+    # Step 7: Override encoder with S2 weights
     s2_enc_path = checkpoint_dir / "encoder_trainable.pt"
     if s2_enc_path.exists():
         state_dict = torch.load(s2_enc_path, map_location="cpu", weights_only=True)
         model.encoder.load_state_dict(state_dict, strict=False)
         print(f"Loaded S2 encoder from {s2_enc_path}")
-
-    # Step 4: Merge LoRA for faster inference
-    model.qwen = model.qwen.merge_and_unload()
-    print("Merged S2 LoRA into base model")
 
     model = model.to(device)
     model.eval()
