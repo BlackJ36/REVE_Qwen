@@ -151,6 +151,15 @@ def train_phase(model, train_loader, val_loader, device, args, phase_name):
     return best_val_acc
 
 
+def _get_base_reve(model):
+    """Get the underlying Reve model, unwrapping PEFT if present."""
+    from peft import PeftModel
+    reve = model.reve.reve
+    if isinstance(reve, PeftModel):
+        return reve.base_model.model
+    return reve
+
+
 def _save_checkpoint(model, output_dir, phase_name):
     """Save phase-specific checkpoint files."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -159,12 +168,7 @@ def _save_checkpoint(model, output_dir, phase_name):
     torch.save(model.head.state_dict(), output_dir / "head.pt")
 
     # Save REVE pooling weights (cls_query_token + ln)
-    reve = model.reve.reve
-    # Handle PEFT-wrapped models
-    if hasattr(reve, "base_model"):
-        base_reve = reve.base_model.model
-    else:
-        base_reve = reve
+    base_reve = _get_base_reve(model)
     pooling_state = {}
     if hasattr(base_reve, "cls_query_token"):
         pooling_state["cls_query_token"] = base_reve.cls_query_token.data
@@ -174,6 +178,7 @@ def _save_checkpoint(model, output_dir, phase_name):
     torch.save(pooling_state, output_dir / "reve_pooling.pt")
 
     # Phase B: save PEFT LoRA adapter
+    reve = model.reve.reve
     if phase_name == "lora" and hasattr(reve, "save_pretrained"):
         lora_dir = output_dir / "reve_lora"
         reve.save_pretrained(str(lora_dir))
@@ -193,11 +198,7 @@ def _load_checkpoint(model, output_dir, phase_name, device):
     pooling_path = output_dir / "reve_pooling.pt"
     if pooling_path.exists():
         pooling_state = torch.load(pooling_path, map_location=device, weights_only=True)
-        reve = model.reve.reve
-        if hasattr(reve, "base_model"):
-            base_reve = reve.base_model.model
-        else:
-            base_reve = reve
+        base_reve = _get_base_reve(model)
         for name, param in pooling_state.items():
             parts = name.split(".")
             obj = base_reve
