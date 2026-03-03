@@ -249,21 +249,27 @@ def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_si
                     pos_eeg = target_positions[0]
                     eeg_logits = logits[i, pos_eeg - 1, target_id_tensor]
                     eeg_p = F.softmax(eeg_logits, dim=0)
-                    eeg_only_preds.append(eeg_p.argmax().item())
+                    # Use full-vocab argmax (consistent with Trainer metrics)
+                    eeg_full_pred = logits[i, pos_eeg - 1].argmax().item()
+                    eeg_label = target_id_to_label.get(eeg_full_pred, -1)
+                    eeg_only_preds.append(eeg_label)
                     eeg_only_probs.append(eeg_p.cpu().float().numpy())
 
                     # Final prediction (2nd target position)
                     pos_final = target_positions[1]
                     final_logits = logits[i, pos_final - 1, target_id_tensor]
                     final_p = F.softmax(final_logits, dim=0)
-                    final_preds.append(final_p.argmax().item())
+                    final_full_pred = logits[i, pos_final - 1].argmax().item()
+                    final_label = target_id_to_label.get(final_full_pred, -1)
+                    final_preds.append(final_label)
                     final_probs.append(final_p.cpu().float().numpy())
                 elif target_positions:
                     # Single-step fallback (backward compat)
                     pos = target_positions[0]
                     target_logits = logits[i, pos - 1, target_id_tensor]
                     probs = F.softmax(target_logits, dim=0)
-                    final_preds.append(probs.argmax().item())
+                    full_pred = logits[i, pos - 1].argmax().item()
+                    final_preds.append(target_id_to_label.get(full_pred, -1))
                     final_probs.append(probs.cpu().float().numpy())
                     eeg_only_preds.append(-1)
                     eeg_only_probs.append(np.zeros(40))
