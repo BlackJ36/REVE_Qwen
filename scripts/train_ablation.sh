@@ -50,8 +50,8 @@ S1_EPOCHS=${S1_EPOCHS:-30}
 S1_LR=${S1_LR:-5e-4}
 S1_ENC_LR=${S1_ENC_LR:-1e-3}
 
-# Stage 2: micro_bs=8 (LoRA uses more memory)
-S2_BS=${S2_BS:-8}
+# Stage 2: micro_bs=4 (LoRA + long sequences need more memory)
+S2_BS=${S2_BS:-4}
 S2_ACCUM=$(auto_accum $S2_BS)
 S2_EPOCHS=${S2_EPOCHS:-20}
 S2_LR=${S2_LR:-2e-5}
