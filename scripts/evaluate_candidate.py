@@ -58,12 +58,13 @@ def load_model_for_inference(
     checkpoint_dir = Path(checkpoint_dir)
     s1_dir = Path(s1_checkpoint)
 
-    # Step 1: Build base model (no LoRA)
+    # Step 1: Build base model (lora_rank=0 to get plain Qwen, no PEFT wrapping)
     model, tokenizer = build_bci_agent_model(
         model_name=model_name,
         from_modelscope=from_modelscope,
         reve_dir=reve_dir,
         stage=1,
+        lora_rank=0,
         encoder_type=encoder_type,
         fbcca_mode=fbcca_mode,
         window_size=window_size,
@@ -82,11 +83,6 @@ def load_model_for_inference(
         model.qwen = PeftModelClass.from_pretrained(model.qwen, str(s1_dir))
         model.qwen = model.qwen.merge_and_unload()
         print(f"Loaded and merged S1 LoRA from {s1_dir}")
-
-        # Clean PEFT metadata left by merge_and_unload to prevent double-nesting
-        for attr in ("peft_config", "_hf_peft_config_loaded"):
-            if hasattr(model.qwen, attr):
-                delattr(model.qwen, attr)
 
     qwen_path = s1_dir / "qwen_trainable.pt"
     if qwen_path.exists():
