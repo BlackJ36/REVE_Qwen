@@ -211,20 +211,44 @@ def build_bci_agent_model(
     # --- Freeze strategy ---
     original_vocab_size = len(tokenizer) - num_new  # vocab size before adding BCI tokens
 
-    if stage == 1:
-        # Freeze all Qwen params
+    # Stage 2: Load S1 Qwen weights BEFORE applying S2 LoRA
+    # (S1 LoRA must be merged first so S2 LoRA builds on top of S1's learned weights)
+    if stage == 2 and stage1_checkpoint is not None:
+        s1_dir = Path(stage1_checkpoint)
+        if (s1_dir / "adapter_config.json").exists():
+            # S1 used LoRA — load and merge into base model
+            from peft import PeftModel as PeftModelClass
+            print(f"Loading S1 LoRA from {s1_dir}")
+            qwen_model = PeftModelClass.from_pretrained(qwen_model, str(s1_dir))
+            qwen_model = qwen_model.merge_and_unload()
+            print("Merged S1 LoRA into base model")
+        else:
+            # Legacy: load qwen_trainable.pt (S1 without LoRA)
+            qwen_path = s1_dir / "qwen_trainable.pt"
+            if qwen_path.exists():
+                print(f"Loading Stage 1 embeddings from {qwen_path}")
+                qwen_state = torch.load(qwen_path, map_location="cpu", weights_only=True)
+                ovs = original_vocab_size
+                if "embed_tokens.new_rows" in qwen_state:
+                    new_rows = qwen_state["embed_tokens.new_rows"]
+                    qwen_model.get_input_embeddings().weight.data[ovs:] = new_rows
+                    print(f"  Restored {new_rows.shape[0]} new token embeddings")
+                if "lm_head.new_rows" in qwen_state:
+                    qwen_model.lm_head.weight.data[ovs:] = qwen_state["lm_head.new_rows"]
+                    print(f"  Restored lm_head new token rows")
+            else:
+                print(f"WARNING: {qwen_path} not found, special token embeddings untrained")
+
+    if stage == 1 and lora_rank <= 0:
+        # S1 without LoRA: freeze all, gradient hook for new tokens only
         qwen_model.requires_grad_(False)
-        # Unfreeze embed_tokens so new token rows can train
         embed_weight = qwen_model.get_input_embeddings().weight
         embed_weight.requires_grad_(True)
-        # Gradient hook: zero out gradients for original vocab rows
-        # Only the num_new new token rows (at the end) receive updates
         def _mask_original_grad(grad):
             grad[:original_vocab_size] = 0
             return grad
         embed_weight.register_hook(_mask_original_grad)
 
-        # If lm_head is separate (not tied), do the same
         if not getattr(qwen_model.config, "tie_word_embeddings", True):
             lm_weight = qwen_model.lm_head.weight
             lm_weight.requires_grad_(True)
@@ -233,8 +257,23 @@ def build_bci_agent_model(
         new_token_params = num_new * llm_dim
         print(f"Stage 1: Qwen frozen, only {num_new} new token embeddings trainable ({new_token_params:,} params)")
 
+    elif stage == 1 and lora_rank > 0:
+        # S1 with LoRA: Qwen attention adapts to EEG tokens
+        lora_config = LoraConfig(
+            r=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            target_modules=list(lora_target_modules),
+            modules_to_save=["embed_tokens", "lm_head"],
+            task_type="CAUSAL_LM",
+            bias="none",
+        )
+        qwen_model = get_peft_model(qwen_model, lora_config)
+        qwen_model.print_trainable_parameters()
+        print(f"Stage 1 with LoRA: rank={lora_rank}, alpha={lora_alpha}")
+
     elif stage == 2:
-        # Apply LoRA
+        # S2: apply fresh LoRA (on top of merged S1 weights if applicable)
         lora_config = LoraConfig(
             r=lora_rank,
             lora_alpha=lora_alpha,
@@ -263,11 +302,9 @@ def build_bci_agent_model(
         unfreeze_last_n=unfreeze_last_n,
     )
 
-    # --- Load Stage 1 weights for Stage 2 ---
+    # --- Load Stage 1 encoder weights for Stage 2 ---
     if stage == 2 and stage1_checkpoint is not None:
         s1_dir = Path(stage1_checkpoint)
-
-        # Load encoder weights (FiLM + projector)
         enc_path = s1_dir / "encoder_trainable.pt"
         if enc_path.exists():
             print(f"Loading Stage 1 encoder from {enc_path}")
@@ -279,22 +316,6 @@ def build_bci_agent_model(
                 print(f"  Unexpected keys: {unexpected}")
         else:
             print(f"WARNING: {enc_path} not found, training encoder from scratch")
-
-        # Load trained new-token embedding rows from Stage 1
-        qwen_path = s1_dir / "qwen_trainable.pt"
-        if qwen_path.exists():
-            print(f"Loading Stage 1 embeddings from {qwen_path}")
-            qwen_state = torch.load(qwen_path, map_location="cpu", weights_only=True)
-            ovs = original_vocab_size
-            if "embed_tokens.new_rows" in qwen_state:
-                new_rows = qwen_state["embed_tokens.new_rows"]
-                qwen_model.get_input_embeddings().weight.data[ovs:] = new_rows
-                print(f"  Restored {new_rows.shape[0]} new token embeddings")
-            if "lm_head.new_rows" in qwen_state:
-                qwen_model.lm_head.weight.data[ovs:] = qwen_state["lm_head.new_rows"]
-                print(f"  Restored lm_head new token rows")
-        else:
-            print(f"WARNING: {qwen_path} not found, special token embeddings untrained")
 
     # --- Assemble ---
     model = BCIAgentModel(encoder, qwen_model, tokenizer, original_vocab_size)

@@ -45,6 +45,13 @@ def parse_args():
     parser.add_argument("--no_fbcca", dest="use_fbcca", action="store_false",
                         help="Disable FBCCA. Prefer --fbcca_mode none instead.")
 
+    # S1 LoRA (enables Qwen attention to adapt to EEG tokens in Stage 1)
+    parser.add_argument("--s1_lora_rank", type=int, default=0,
+                        help="LoRA rank for Stage 1 (0 = no LoRA, >0 = apply LoRA). "
+                             "Recommended: 16 for candidate mode.")
+    parser.add_argument("--s1_lora_alpha", type=int, default=32,
+                        help="LoRA alpha for Stage 1 (default: 32)")
+
     # Stage 2 specific
     parser.add_argument("--stage1_checkpoint", type=str, default=None,
                         help="Path to Stage 1 best checkpoint directory")
@@ -153,6 +160,8 @@ def main():
             cand_dropout=args.cand_dropout,
             early_stopping_patience=args.early_stopping_patience,
             unfreeze_last_n=args.unfreeze_last_n,
+            lora_rank=args.s1_lora_rank,
+            lora_alpha=args.s1_lora_alpha,
             deepspeed_config=args.deepspeed,
         )
 
