@@ -40,7 +40,7 @@ class REVEFinetuneDataset(Dataset):
             for sid in exclude_subjects:
                 mask &= data["subject_ids"] != sid
             n_removed = int((~mask).sum())
-            data = {k: v[mask] for k, v in data.items()}
+            data = {k: v[mask] for k, v in data.items() if isinstance(v, torch.Tensor)}
             print(f"  Excluded {n_removed} trials from {len(exclude_subjects)} subjects")
 
         self.eeg_data = data["eeg_data"]    # (N, 62, T)
