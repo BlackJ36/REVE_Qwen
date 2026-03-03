@@ -30,11 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.dataset_bci_agent import BETA_BAD_SUBJECTS
 from src.dataset_bci_candidate import CandidateStage1Dataset
 from src.dataset_bci_agent import BCIAgentCollator
-from src.tokens import (
-    TARGET_INDEX_TO_TOKEN, BCI_PAD,
-    RANK1, RANK2, RANK3, CONF_HIGH, CONF_MID, CONF_LOW,
-    score_gap_to_conf_token,
-)
+from src.tokens import TARGET_INDEX_TO_TOKEN, BCI_PAD
 from src.templates_zh import KEYBOARD_CHARS
 from src.word_vocab import CHAR_TO_LABEL
 
@@ -131,8 +127,6 @@ def spell_word(model, tokenizer, dataset, eeg_data, fbcca_indices, fbcca_scores,
 
         # FBCCA info
         fbcca_chars = [KEYBOARD_CHARS[i] for i in top3_idx]
-        conf_token = score_gap_to_conf_token(top3_sc[0], top3_sc[1])
-        conf_str = {CONF_HIGH: "HIGH", CONF_MID: "MID", CONF_LOW: "LOW"}[conf_token]
 
         is_correct = pred_label == target_label
         if is_correct:
@@ -144,7 +138,7 @@ def spell_word(model, tokenizer, dataset, eeg_data, fbcca_indices, fbcca_scores,
         if is_correct and not fbcca_correct:
             status = "FIXED!"
 
-        print(f"\n  [{ci+1}] Target: '{char}'  |  FBCCA: {fbcca_chars[0]}>{fbcca_chars[1]}>{fbcca_chars[2]} ({conf_str})")
+        print(f"\n  [{ci+1}] Target: '{char}'  |  Decoder: {fbcca_chars[0]}>{fbcca_chars[1]}>{fbcca_chars[2]}")
         print(f"      Model prediction: '{pred_char}' (conf={confidence:.2f})  [{status}]")
         print(f"      Spelled so far: \"{spelled}\"")
 

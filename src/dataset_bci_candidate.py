@@ -7,9 +7,13 @@ Stage 2: Word-level spelling — assembles multi-spell sequences that spell
   real words, using label→trial mapping to find matching EEG data.
 
 Per-spell token format (two-step prediction):
-    [62×pad] <|bci_pred|> <|rank1|><|tXX|> ... <|rank3|><|tZZ|> <|conf_X|> <|tNN|> <|bci_trans|>
-             ^^^^^^^^^^^^                                                    ^^^^^
-             EEG-only supervised (logits[last_pad]→tid)                      Final supervised
+    [62×pad] <|bci_pred|> <|cand|><|tXX|> <|cand|><|tYY|> <|cand|><|tZZ|> <|tNN|> <|bci_trans|>
+             ^^^^^^^^^^^^                                                   ^^^^^
+             EEG-only supervised (logits[last_pad]→tid)                     Final supervised
+
+Candidates are in RANDOM order (no rank info, no confidence) to prevent
+position-based shortcut learning. The model must use EEG + language prior
+to identify the correct target among candidates.
 
 Two supervision points per spell force the model to first decode from pure EEG
 (before seeing candidates), then refine with candidate context.
@@ -30,15 +34,8 @@ from .tokens import (
     BCI_PAD,
     BCI_PRED,
     BCI_TRANS,
-    CONF_HIGH,
-    CONF_LOW,
-    CONF_MID,
-    RANK1,
-    RANK2,
-    RANK3,
+    CAND,
     TARGET_INDEX_TO_TOKEN,
-    score_gap_to_conf_token,
-    score_gap_to_conf_token_adaptive,
 )
 from .word_vocab import WordVocab, generate_random_sequence, sample_word, word_to_labels
 
@@ -161,16 +158,7 @@ class CandidateStage1Dataset(Dataset):
         self.bci_pad_id = tokenizer.convert_tokens_to_ids(BCI_PAD)
         self.bci_pred_id = tokenizer.convert_tokens_to_ids(BCI_PRED)
         self.bci_trans_id = tokenizer.convert_tokens_to_ids(BCI_TRANS)
-        self.rank_ids = [
-            tokenizer.convert_tokens_to_ids(RANK1),
-            tokenizer.convert_tokens_to_ids(RANK2),
-            tokenizer.convert_tokens_to_ids(RANK3),
-        ]
-        self.conf_ids = {
-            CONF_HIGH: tokenizer.convert_tokens_to_ids(CONF_HIGH),
-            CONF_MID: tokenizer.convert_tokens_to_ids(CONF_MID),
-            CONF_LOW: tokenizer.convert_tokens_to_ids(CONF_LOW),
-        }
+        self.cand_id = tokenizer.convert_tokens_to_ids(CAND)
         self.target_ids = {
             i: tokenizer.convert_tokens_to_ids(tok)
             for i, tok in TARGET_INDEX_TO_TOKEN.items()
@@ -233,14 +221,16 @@ class CandidateStage1Dataset(Dataset):
         }
 
     def _build_sequence(self, target_indices, fbcca_candidates):
-        """Build token sequence with two-step prediction + FBCCA candidates.
+        """Build token sequence with two-step prediction + shuffled candidates.
 
         Format per spell:
-            [62×pad] <|bci_pred|> [rank1][tXX] [rank2][tYY] [rank3][tZZ] [conf_X] [target] [trans]
+            [62×pad] <|bci_pred|> [cand][tXX] [cand][tYY] [cand][tZZ] [target] [trans]
 
         Labels (causal LM shift — logits[i] predicts labels[i+1]):
-            [-100]×62  [tid]       [-100]×7                              [-100]    [tid]    [-100]
+            [-100]×62  [tid]       [-100]×6                            [tid]    [-100]
                        ^EEG-only prediction (logits[last_pad] → pure EEG) ^Final prediction
+
+        Candidates are in random order — model cannot use position to shortcut.
         """
         n = self.num_eeg_tokens
         K = len(target_indices)
@@ -260,28 +250,23 @@ class CandidateStage1Dataset(Dataset):
             input_ids.append(self.bci_pred_id)
             labels.append(tid)
 
-            # Candidate dropout: randomize indices but keep original scores,
-            # so confidence token distribution stays realistic and model can't
-            # detect dropout from score patterns alone.
+            # Candidate dropout: replace with random indices
             top3_idx, top3_sc = fbcca_candidates[i]
             self._total_spell_count += 1
             if self.cand_dropout > 0 and random.random() < self.cand_dropout:
                 top3_idx = random.sample(range(40), 3)
                 self._dropout_count += 1
 
-            # Decoder candidates: [rank1][tXX] [rank2][tYY] [rank3][tZZ]
-            for rank_j in range(3):
-                input_ids.append(self.rank_ids[rank_j])
-                labels.append(-100)
-                input_ids.append(self.target_ids[top3_idx[rank_j]])
-                labels.append(-100)
+            # Shuffle candidates (random order prevents position shortcut)
+            shuffled = list(range(3))
+            random.shuffle(shuffled)
 
-            # Confidence token (duration-adaptive)
-            conf_token = score_gap_to_conf_token_adaptive(
-                top3_sc[0], top3_sc[1], self.duration_scale,
-                decoder_type=self.decoder_type)
-            input_ids.append(self.conf_ids[conf_token])
-            labels.append(-100)
+            # Decoder candidates: [cand][tXX] [cand][tYY] [cand][tZZ]
+            for j in shuffled:
+                input_ids.append(self.cand_id)
+                labels.append(-100)
+                input_ids.append(self.target_ids[top3_idx[j]])
+                labels.append(-100)
 
             # True target (Final supervised point — masked in eeg_only mode)
             input_ids.append(tid)
@@ -452,16 +437,7 @@ class CandidateStage2Dataset(Dataset):
         self.bci_pad_id = tokenizer.convert_tokens_to_ids(BCI_PAD)
         self.bci_pred_id = tokenizer.convert_tokens_to_ids(BCI_PRED)
         self.bci_trans_id = tokenizer.convert_tokens_to_ids(BCI_TRANS)
-        self.rank_ids = [
-            tokenizer.convert_tokens_to_ids(RANK1),
-            tokenizer.convert_tokens_to_ids(RANK2),
-            tokenizer.convert_tokens_to_ids(RANK3),
-        ]
-        self.conf_ids = {
-            CONF_HIGH: tokenizer.convert_tokens_to_ids(CONF_HIGH),
-            CONF_MID: tokenizer.convert_tokens_to_ids(CONF_MID),
-            CONF_LOW: tokenizer.convert_tokens_to_ids(CONF_LOW),
-        }
+        self.cand_id = tokenizer.convert_tokens_to_ids(CAND)
         self.target_ids = {
             i: tokenizer.convert_tokens_to_ids(tok)
             for i, tok in TARGET_INDEX_TO_TOKEN.items()
@@ -601,7 +577,7 @@ class CandidateStage2Dataset(Dataset):
         input_ids = self.tokenizer.encode(prefix_text, add_special_tokens=False)
         labels = [-100] * len(input_ids)
 
-        # Each spell: pads + bci_pred + FBCCA candidates + target + trans
+        # Each spell: pads + bci_pred + shuffled candidates + target + trans
         spelled = ""
         for i in range(K):
             tid = self.target_ids[target_indices[i]]
@@ -614,26 +590,23 @@ class CandidateStage2Dataset(Dataset):
             input_ids.append(self.bci_pred_id)
             labels.append(tid)
 
-            # Candidate dropout: randomize indices, keep scores
+            # Candidate dropout: replace with random indices
             top3_idx, top3_sc = fbcca_candidates[i]
             self._total_spell_count += 1
             if self.cand_dropout > 0 and random.random() < self.cand_dropout:
                 top3_idx = random.sample(range(40), 3)
                 self._dropout_count += 1
 
-            # Decoder candidates
-            for rank_j in range(3):
-                input_ids.append(self.rank_ids[rank_j])
-                labels.append(-100)
-                input_ids.append(self.target_ids[top3_idx[rank_j]])
-                labels.append(-100)
+            # Shuffle candidates (random order prevents position shortcut)
+            shuffled = list(range(3))
+            random.shuffle(shuffled)
 
-            # Confidence (duration-adaptive)
-            conf_token = score_gap_to_conf_token_adaptive(
-                top3_sc[0], top3_sc[1], self.duration_scale,
-                decoder_type=self.decoder_type)
-            input_ids.append(self.conf_ids[conf_token])
-            labels.append(-100)
+            # Decoder candidates: [cand][tXX] [cand][tYY] [cand][tZZ]
+            for j in shuffled:
+                input_ids.append(self.cand_id)
+                labels.append(-100)
+                input_ids.append(self.target_ids[top3_idx[j]])
+                labels.append(-100)
 
             # True target (Final supervised point — masked in eeg_only mode)
             input_ids.append(tid)
