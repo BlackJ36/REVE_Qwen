@@ -97,22 +97,22 @@ def load_model_for_inference(
     else:
         raise FileNotFoundError(f"No adapter weights found in {checkpoint_dir}")
 
-    # Diagnostic: check weight norms before loading
-    embed_before = model.qwen.get_input_embeddings().weight.data[-47:].norm().item()
-    lora_keys = [k for k in adapter_state if "lora_A" in k]
-    embed_keys = [k for k in adapter_state if "embed_tokens" in k]
-    print(f"  Adapter state: {len(adapter_state)} keys, "
-          f"{len(lora_keys)} LoRA, {len(embed_keys)} embed")
+    # Fix key format: PEFT saves modules_to_save as ".modules_to_save.weight"
+    # but the PeftModel expects ".modules_to_save.default.weight" (with adapter name)
+    fixed_state = {}
+    for key, value in adapter_state.items():
+        if ".modules_to_save.weight" in key:
+            fixed_key = key.replace(".modules_to_save.weight", ".modules_to_save.default.weight")
+            fixed_state[fixed_key] = value
+        else:
+            fixed_state[key] = value
 
-    result = set_peft_model_state_dict(model.qwen, adapter_state)
-    print(f"Loaded trained S2 adapter from {checkpoint_dir}")
+    # Load LoRA weights via PEFT API
+    set_peft_model_state_dict(model.qwen, fixed_state)
 
-    # Diagnostic: check weight norms after loading
-    embed_after = model.qwen.get_input_embeddings().weight.data[-47:].norm().item()
-    print(f"  Embed norm: {embed_before:.4f} -> {embed_after:.4f} "
-          f"({'CHANGED' if abs(embed_after - embed_before) > 0.01 else 'UNCHANGED!'})")
-    if hasattr(result, '__len__'):
-        print(f"  Load result: {result}")
+    # Verify modules_to_save loaded correctly
+    embed_norm = model.qwen.get_input_embeddings().weight.data[-47:].norm().item()
+    print(f"Loaded trained S2 adapter from {checkpoint_dir} (embed norm={embed_norm:.4f})")
 
     # Step 3: Override encoder with S2 weights
     s2_enc_path = checkpoint_dir / "encoder_trainable.pt"
