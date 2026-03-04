@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 import torch
+from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
@@ -127,6 +128,10 @@ def train_one_fold(subject_id, args, device):
     optimizer = AdamW(param_groups, weight_decay=1e-4)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
 
+    # AMP: bf16 on Ampere+, fp16 fallback
+    amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    scaler = GradScaler(enabled=(amp_dtype == torch.float16))
+
     best_val_loss = float("inf")
     best_val_acc = 0.0
     best_val_top5 = 0.0
@@ -137,16 +142,19 @@ def train_one_fold(subject_id, args, device):
         # Train
         model.train()
         for batch in train_loader:
-            eeg = batch["eeg"].to(device)
-            labels = batch["labels"].to(device)
-            logits = model(eeg)
-            loss = model.compute_loss(logits, labels)
+            eeg = batch["eeg"].to(device, non_blocking=True)
+            labels = batch["labels"].to(device, non_blocking=True)
+            with autocast("cuda", dtype=amp_dtype):
+                logits = model(eeg)
+                loss = model.compute_loss(logits, labels)
             optimizer.zero_grad()
-            loss.backward()
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(
                 [p for g in param_groups for p in g["params"]], 1.0
             )
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
         scheduler.step()
 
         # Test on held-out subject
@@ -154,10 +162,11 @@ def train_one_fold(subject_id, args, device):
         total_loss, correct, top5_correct, total = 0.0, 0, 0, 0
         with torch.no_grad():
             for batch in test_loader:
-                eeg = batch["eeg"].to(device)
-                labels = batch["labels"].to(device)
-                logits = model(eeg)
-                loss = model.compute_loss(logits, labels)
+                eeg = batch["eeg"].to(device, non_blocking=True)
+                labels = batch["labels"].to(device, non_blocking=True)
+                with autocast("cuda", dtype=amp_dtype):
+                    logits = model(eeg)
+                    loss = model.compute_loss(logits, labels)
                 total_loss += loss.item() * labels.size(0)
                 correct += (logits.argmax(dim=-1) == labels).sum().item()
                 top5 = logits.topk(5, dim=-1).indices
@@ -188,9 +197,11 @@ def train_one_fold(subject_id, args, device):
     all_preds, all_labels, all_logits = [], [], []
     with torch.no_grad():
         for batch in test_loader:
-            eeg = batch["eeg"].to(device)
-            labels = batch["labels"].to(device)
-            logits = model(eeg)
+            eeg = batch["eeg"].to(device, non_blocking=True)
+            labels = batch["labels"].to(device, non_blocking=True)
+            with autocast("cuda", dtype=amp_dtype):
+                logits = model(eeg)
+            logits = logits.float()  # back to fp32 for metrics
             all_preds.append(logits.argmax(dim=-1).cpu())
             all_labels.append(labels.cpu())
             all_logits.append(logits.cpu())
