@@ -319,26 +319,29 @@ def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_si
 def run_multispell_evaluation(model, tokenizer, eeg_dir, device, num_spells=5,
                               exclude_bad=True, batch_size=4,
                               trial_duration=3.0, decoder_type="fbcca"):
-    """Multi-spell evaluation: each trial gets context from prior spells in same group.
+    """Word-level spelling evaluation: spell real words using val EEG data.
 
-    For each trial, sample num_spells-1 random context trials from the same
-    (subject, block) group, build a K-spell sequence with the eval trial last.
-    Context spells use teacher-forcing (true labels for char echoes).
-    Only the LAST spell's predictions are collected.
+    Samples words from the built-in vocabulary (common + BCI + sentences),
+    finds val groups that have trials for all required characters, builds
+    multi-spell sequences, and evaluates every character position.
+
+    Reports per-position accuracy to show how language prior improves
+    later characters (e.g., after "HEL" the model should predict "P" better).
     """
     import random as py_random
+    from src.word_vocab import WordVocab, word_to_labels, COMMON_WORDS, BCI_PHRASES
 
     exclude_subjects = BETA_BAD_SUBJECTS if exclude_bad else None
     trial_duration_pts = int(trial_duration * 200)
     effective_window_size = min(300, trial_duration_pts)
 
-    # Build dataset (for tokenization infrastructure only)
+    # Build dataset (for tokenization infrastructure)
     dataset = CandidateStage1Dataset(
         eeg_dir=eeg_dir,
         tokenizer=tokenizer,
         split="val",
         min_spells=1,
-        max_spells=num_spells,
+        max_spells=50,
         window_size=effective_window_size,
         window_step=100,
         exclude_subjects=exclude_subjects,
@@ -374,15 +377,42 @@ def run_multispell_evaluation(model, tokenizer, eeg_dir, device, num_spells=5,
 
     N = len(labels)
 
-    # Build groups
+    # Build groups + label→trial index
     groups = defaultdict(list)
-    trial_to_group = {}
+    label_to_trials = defaultdict(lambda: defaultdict(list))
     for idx in range(N):
         key = (int(subject_ids[idx]), int(block_ids[idx]))
         groups[key].append(idx)
-        trial_to_group[idx] = key
+        label_to_trials[key][int(labels[idx])].append(idx)
+    group_keys = list(groups.keys())
 
-    print(f"\nMulti-spell evaluation: {num_spells} spells/sequence, {N} trials")
+    # Build test word list: all words that can be spelled by at least one val group
+    test_words = []
+    # Curated test words (short→long, common + BCI)
+    word_candidates = list(dict.fromkeys(
+        sorted(set(COMMON_WORDS) | set(BCI_PHRASES), key=len)
+    ))
+    # Limit to words of length 2-10 for practical eval
+    word_candidates = [w for w in word_candidates if 2 <= len(w) <= min(num_spells, 10)]
+
+    for word in word_candidates:
+        label_indices = word_to_labels(word)
+        if label_indices is None:
+            continue
+        needed = set(label_indices)
+        # Find groups that can spell this word
+        for gk in group_keys:
+            if all(len(label_to_trials[gk].get(l, [])) > 0 for l in needed):
+                test_words.append((word, label_indices, gk))
+                break  # One group per word is enough
+
+    print(f"\nWord-level spelling evaluation:")
+    print(f"  {len(test_words)} spellable words (len 2-{min(num_spells, 10)}), "
+          f"{len(group_keys)} val groups")
+
+    if not test_words:
+        print("  ERROR: No spellable words found in val groups!")
+        return None
 
     target_token_ids = {
         i: tokenizer.convert_tokens_to_ids(tok)
@@ -392,53 +422,43 @@ def run_multispell_evaluation(model, tokenizer, eeg_dir, device, num_spells=5,
     target_id_tensor = torch.tensor(list(target_token_ids.values()), device=device)
 
     collator = BCIAgentCollator(tokenizer)
-    eeg_only_preds = []
-    eeg_only_probs = []
-    final_preds = []
-    final_probs = []
 
-    py_random.seed(42)  # Reproducible context sampling
+    # Collect per-position results
+    all_results = []  # list of (word, pos, true_label, eeg_pred, final_pred, decoder_pred)
 
-    for start_idx in range(0, N, batch_size):
-        end_idx = min(start_idx + batch_size, N)
+    py_random.seed(42)
+
+    # Process words in batches
+    for batch_start in range(0, len(test_words), batch_size):
+        batch_end = min(batch_start + batch_size, len(test_words))
         batch_items = []
+        batch_meta = []  # (word, label_indices, group_key) per item
 
-        for trial_idx in range(start_idx, end_idx):
-            group_key = trial_to_group[trial_idx]
-            group_indices = groups[group_key]
-
-            # Sample context trials (excluding eval trial)
-            available = [i for i in group_indices if i != trial_idx]
-            context_count = min(num_spells - 1, len(available))
-            context_indices = py_random.sample(available, context_count)
-
-            # Context first, eval trial LAST
-            all_indices = context_indices + [trial_idx]
-
-            target_indices = []
+        for word, label_indices, group_key in test_words[batch_start:batch_end]:
             eeg_windows = []
             fbcca_candidates = []
 
-            for idx in all_indices:
-                target_indices.append(int(labels[idx]))
-                # Context: random offset; eval trial: offset 0
-                offset_idx = 0 if idx == trial_idx else py_random.randrange(len(dataset.window_offsets))
+            for label in label_indices:
+                trials = label_to_trials[group_key][label]
+                trial_idx = py_random.choice(trials)
+                offset_idx = py_random.randrange(len(dataset.window_offsets))
                 offset = dataset.window_offsets[offset_idx]
-                window = eeg_data[idx, :, offset:offset + effective_window_size]
+                window = eeg_data[trial_idx, :, offset:offset + effective_window_size]
                 eeg_windows.append(window)
-                top3_idx = fbcca_indices[idx, offset_idx].tolist()
-                top3_sc = fbcca_scores[idx, offset_idx].tolist()
+                top3_idx = fbcca_indices[trial_idx, offset_idx].tolist()
+                top3_sc = fbcca_scores[trial_idx, offset_idx].tolist()
                 fbcca_candidates.append((top3_idx, top3_sc))
 
             eeg_windows_tensor = torch.stack(eeg_windows)
-            input_ids, label_ids, _ = dataset._build_sequence(target_indices, fbcca_candidates)
+            input_ids, label_ids, _ = dataset._build_sequence(label_indices, fbcca_candidates)
 
             batch_items.append({
                 "input_ids": torch.tensor(input_ids, dtype=torch.long),
                 "labels": torch.tensor(label_ids, dtype=torch.long),
                 "eeg_windows": eeg_windows_tensor.float(),
-                "num_spells": len(all_indices),
+                "num_spells": len(label_indices),
             })
+            batch_meta.append((word, label_indices, fbcca_candidates))
 
         batch = collator(batch_items)
         batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
@@ -446,7 +466,6 @@ def run_multispell_evaluation(model, tokenizer, eeg_dir, device, num_spells=5,
         with torch.no_grad():
             eeg_windows_b = batch.pop("eeg_windows", None)
             window_counts = batch.pop("window_counts", None)
-
             outputs = model(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
@@ -454,53 +473,128 @@ def run_multispell_evaluation(model, tokenizer, eeg_dir, device, num_spells=5,
                 eeg_windows=eeg_windows_b if eeg_windows_b is not None and eeg_windows_b.numel() > 0 else None,
                 window_counts=window_counts,
             )
-
             logits = outputs.logits
             B = batch["labels"].shape[0]
 
             for i in range(B):
+                word, label_indices, fbcca_cands = batch_meta[i]
                 label_row = batch["labels"][i]
                 target_positions = [
                     pos for pos in range(len(label_row))
                     if label_row[pos].item() in target_id_to_label
                 ]
 
-                # Last 2 target positions = eval trial's (EEG-only, Final)
-                if len(target_positions) >= 2:
-                    pos_eeg = target_positions[-2]
-                    eeg_logits_i = logits[i, pos_eeg - 1, target_id_tensor]
-                    eeg_p = F.softmax(eeg_logits_i, dim=0)
-                    eeg_full_pred = logits[i, pos_eeg - 1].argmax().item()
-                    eeg_only_preds.append(target_id_to_label.get(eeg_full_pred, -1))
-                    eeg_only_probs.append(eeg_p.cpu().float().numpy())
+                # Each spell has 2 target positions (EEG-only + Final)
+                K = len(label_indices)
+                for k in range(K):
+                    pos_pair_start = k * 2
+                    if pos_pair_start + 1 >= len(target_positions):
+                        break
 
-                    pos_final = target_positions[-1]
-                    final_logits_i = logits[i, pos_final - 1, target_id_tensor]
-                    final_p = F.softmax(final_logits_i, dim=0)
-                    final_full_pred = logits[i, pos_final - 1].argmax().item()
-                    final_preds.append(target_id_to_label.get(final_full_pred, -1))
-                    final_probs.append(final_p.cpu().float().numpy())
-                else:
-                    eeg_only_preds.append(-1)
-                    eeg_only_probs.append(np.zeros(40))
-                    final_preds.append(-1)
-                    final_probs.append(np.zeros(40))
+                    pos_eeg = target_positions[pos_pair_start]
+                    pos_final = target_positions[pos_pair_start + 1]
 
-        if (start_idx // batch_size) % 20 == 0:
-            print(f"  Processed {end_idx}/{N} trials...")
+                    eeg_pred = logits[i, pos_eeg - 1].argmax().item()
+                    eeg_label = target_id_to_label.get(eeg_pred, -1)
 
-    true_labels_np = labels.numpy()
-    fbcca_top1 = fbcca_indices[:, 0, 0].numpy()
-    subject_ids_np = subject_ids.numpy()
+                    final_pred = logits[i, pos_final - 1].argmax().item()
+                    final_label = target_id_to_label.get(final_pred, -1)
+
+                    decoder_pred = fbcca_cands[k][0][0]  # top-1 decoder pred
+
+                    all_results.append({
+                        "word": word,
+                        "pos": k,
+                        "true_label": label_indices[k],
+                        "eeg_pred": eeg_label,
+                        "final_pred": final_label,
+                        "decoder_pred": decoder_pred,
+                    })
+
+        if (batch_start // batch_size) % 10 == 0:
+            print(f"  Processed {batch_end}/{len(test_words)} words...")
+
+    # === Print results ===
+    print(f"\n{'='*70}")
+    print("WORD-LEVEL SPELLING RESULTS")
+    print(f"{'='*70}")
+
+    total = len(all_results)
+    eeg_correct = sum(1 for r in all_results if r["eeg_pred"] == r["true_label"])
+    final_correct = sum(1 for r in all_results if r["final_pred"] == r["true_label"])
+    decoder_correct = sum(1 for r in all_results if r["decoder_pred"] == r["true_label"])
+
+    print(f"  Total characters: {total} ({len(test_words)} words)")
+    print(f"  {decoder_type.upper()} accuracy:  {decoder_correct/total:.1%}")
+    print(f"  EEG-only accuracy: {eeg_correct/total:.1%}")
+    print(f"  Final accuracy:    {final_correct/total:.1%}")
+
+    # Per-position accuracy
+    print(f"\n{'─'*70}")
+    print("PER-POSITION ACCURACY (language prior effect)")
+    print(f"{'─'*70}")
+    print(f"{'Pos':>5} {'Chars':>6} {'Decoder':>8} {'EEG-only':>9} {'Final':>8}  Note")
+
+    max_pos = max(r["pos"] for r in all_results)
+    for pos in range(max_pos + 1):
+        pos_results = [r for r in all_results if r["pos"] == pos]
+        if not pos_results:
+            break
+        n = len(pos_results)
+        dec_acc = sum(1 for r in pos_results if r["decoder_pred"] == r["true_label"]) / n
+        eeg_acc = sum(1 for r in pos_results if r["eeg_pred"] == r["true_label"]) / n
+        fin_acc = sum(1 for r in pos_results if r["final_pred"] == r["true_label"]) / n
+        note = "(no context)" if pos == 0 else f"({pos} chars context)"
+        print(f"  {pos+1:>3}   {n:>5}   {dec_acc:>7.1%}   {eeg_acc:>8.1%}   {fin_acc:>7.1%}  {note}")
+
+    # Word-level accuracy (all chars correct)
+    print(f"\n{'─'*70}")
+    print("WORD ACCURACY (all characters correct)")
+    print(f"{'─'*70}")
+    word_groups = defaultdict(list)
+    for r in all_results:
+        word_groups[r["word"]].append(r)
+
+    words_correct_decoder = 0
+    words_correct_final = 0
+    for word, results in word_groups.items():
+        if all(r["decoder_pred"] == r["true_label"] for r in results):
+            words_correct_decoder += 1
+        if all(r["final_pred"] == r["true_label"] for r in results):
+            words_correct_final += 1
+
+    n_words = len(word_groups)
+    print(f"  {decoder_type.upper()} word accuracy: {words_correct_decoder}/{n_words} = {words_correct_decoder/n_words:.1%}")
+    print(f"  Final word accuracy: {words_correct_final}/{n_words} = {words_correct_final/n_words:.1%}")
+
+    # Sample word predictions
+    print(f"\n{'─'*70}")
+    print("SAMPLE WORD PREDICTIONS (first 15)")
+    print(f"{'─'*70}")
+    shown = 0
+    for word in list(word_groups.keys())[:15]:
+        results = word_groups[word]
+        true_word = word
+        final_word = "".join(KEYBOARD_CHARS[r["final_pred"]] if 0 <= r["final_pred"] < 40 else "?" for r in results)
+        decoder_word = "".join(KEYBOARD_CHARS[r["decoder_pred"]] if 0 <= r["decoder_pred"] < 40 else "?" for r in results)
+        match = "OK" if final_word == true_word else "MISS"
+        print(f"  {true_word:<12} → Final: {final_word:<12} {decoder_type.upper()}: {decoder_word:<12} [{match}]")
+        shown += 1
+
+    # Build compatible return dict for print_results
+    true_labels_list = [r["true_label"] for r in all_results]
+    final_preds_list = [r["final_pred"] for r in all_results]
+    eeg_preds_list = [r["eeg_pred"] for r in all_results]
+    decoder_preds_list = [r["decoder_pred"] for r in all_results]
 
     return {
-        "eeg_only_preds": np.array(eeg_only_preds),
-        "eeg_only_probs": np.array(eeg_only_probs),
-        "final_preds": np.array(final_preds),
-        "final_probs": np.array(final_probs),
-        "true_labels": true_labels_np,
-        "fbcca_top1": fbcca_top1,
-        "subject_ids": subject_ids_np,
+        "eeg_only_preds": np.array(eeg_preds_list),
+        "eeg_only_probs": np.zeros((total, 40)),  # not computed per-word
+        "final_preds": np.array(final_preds_list),
+        "final_probs": np.zeros((total, 40)),
+        "true_labels": np.array(true_labels_list),
+        "fbcca_top1": np.array(decoder_preds_list),
+        "subject_ids": np.zeros(total, dtype=np.int64),
         "two_step": True,
     }
 
@@ -818,10 +912,15 @@ def main():
             **eval_extra,
         )
 
+        if results is None:
+            return
+
         if args.letters_only:
             results = filter_results_by_char_type(results, keep="letters")
 
-        print_results(results, decoder_name=args.decoder_type.upper())
+        # Multi-spell prints its own results; single-spell uses print_results
+        if args.spells <= 1:
+            print_results(results, decoder_name=args.decoder_type.upper())
 
         # Save predictions
         suffix = "" if dur == 3.0 else f"_{int(dur*200)}pt"
