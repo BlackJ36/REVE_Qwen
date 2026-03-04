@@ -316,6 +316,195 @@ def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_si
     }
 
 
+def run_multispell_evaluation(model, tokenizer, eeg_dir, device, num_spells=5,
+                              exclude_bad=True, batch_size=4,
+                              trial_duration=3.0, decoder_type="fbcca"):
+    """Multi-spell evaluation: each trial gets context from prior spells in same group.
+
+    For each trial, sample num_spells-1 random context trials from the same
+    (subject, block) group, build a K-spell sequence with the eval trial last.
+    Context spells use teacher-forcing (true labels for char echoes).
+    Only the LAST spell's predictions are collected.
+    """
+    import random as py_random
+
+    exclude_subjects = BETA_BAD_SUBJECTS if exclude_bad else None
+    trial_duration_pts = int(trial_duration * 200)
+    effective_window_size = min(300, trial_duration_pts)
+
+    # Build dataset (for tokenization infrastructure only)
+    dataset = CandidateStage1Dataset(
+        eeg_dir=eeg_dir,
+        tokenizer=tokenizer,
+        split="val",
+        min_spells=1,
+        max_spells=num_spells,
+        window_size=effective_window_size,
+        window_step=100,
+        exclude_subjects=exclude_subjects,
+        trial_duration_pts=trial_duration_pts,
+        decoder_type=decoder_type,
+    )
+
+    # Load raw data
+    data = torch.load(Path(eeg_dir) / "val_eeg.pt", weights_only=True)
+    if trial_duration_pts == 600:
+        cand_filename = f"val_{decoder_type}.pt"
+    else:
+        cand_filename = f"val_{decoder_type}_{trial_duration_pts}pt.pt"
+    fbcca_data = torch.load(Path(eeg_dir) / cand_filename, weights_only=True)
+
+    if exclude_bad:
+        mask = torch.ones(len(data["labels"]), dtype=torch.bool)
+        for sid in exclude_subjects:
+            mask &= data["subject_ids"] != sid
+        labels = data["labels"][mask]
+        subject_ids = data["subject_ids"][mask]
+        block_ids = data["block_ids"][mask]
+        eeg_data = data["eeg_data"][mask]
+        fbcca_indices = fbcca_data["top3_indices"][mask]
+        fbcca_scores = fbcca_data["top3_scores"][mask]
+    else:
+        labels = data["labels"]
+        subject_ids = data["subject_ids"]
+        block_ids = data["block_ids"]
+        eeg_data = data["eeg_data"]
+        fbcca_indices = fbcca_data["top3_indices"]
+        fbcca_scores = fbcca_data["top3_scores"]
+
+    N = len(labels)
+
+    # Build groups
+    groups = defaultdict(list)
+    trial_to_group = {}
+    for idx in range(N):
+        key = (int(subject_ids[idx]), int(block_ids[idx]))
+        groups[key].append(idx)
+        trial_to_group[idx] = key
+
+    print(f"\nMulti-spell evaluation: {num_spells} spells/sequence, {N} trials")
+
+    target_token_ids = {
+        i: tokenizer.convert_tokens_to_ids(tok)
+        for i, tok in TARGET_INDEX_TO_TOKEN.items()
+    }
+    target_id_to_label = {v: k for k, v in target_token_ids.items()}
+    target_id_tensor = torch.tensor(list(target_token_ids.values()), device=device)
+
+    collator = BCIAgentCollator(tokenizer)
+    eeg_only_preds = []
+    eeg_only_probs = []
+    final_preds = []
+    final_probs = []
+
+    py_random.seed(42)  # Reproducible context sampling
+
+    for start_idx in range(0, N, batch_size):
+        end_idx = min(start_idx + batch_size, N)
+        batch_items = []
+
+        for trial_idx in range(start_idx, end_idx):
+            group_key = trial_to_group[trial_idx]
+            group_indices = groups[group_key]
+
+            # Sample context trials (excluding eval trial)
+            available = [i for i in group_indices if i != trial_idx]
+            context_count = min(num_spells - 1, len(available))
+            context_indices = py_random.sample(available, context_count)
+
+            # Context first, eval trial LAST
+            all_indices = context_indices + [trial_idx]
+
+            target_indices = []
+            eeg_windows = []
+            fbcca_candidates = []
+
+            for idx in all_indices:
+                target_indices.append(int(labels[idx]))
+                # Context: random offset; eval trial: offset 0
+                offset_idx = 0 if idx == trial_idx else py_random.randrange(len(dataset.window_offsets))
+                offset = dataset.window_offsets[offset_idx]
+                window = eeg_data[idx, :, offset:offset + effective_window_size]
+                eeg_windows.append(window)
+                top3_idx = fbcca_indices[idx, offset_idx].tolist()
+                top3_sc = fbcca_scores[idx, offset_idx].tolist()
+                fbcca_candidates.append((top3_idx, top3_sc))
+
+            eeg_windows_tensor = torch.stack(eeg_windows)
+            input_ids, label_ids, _ = dataset._build_sequence(target_indices, fbcca_candidates)
+
+            batch_items.append({
+                "input_ids": torch.tensor(input_ids, dtype=torch.long),
+                "labels": torch.tensor(label_ids, dtype=torch.long),
+                "eeg_windows": eeg_windows_tensor.float(),
+                "num_spells": len(all_indices),
+            })
+
+        batch = collator(batch_items)
+        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+
+        with torch.no_grad():
+            eeg_windows_b = batch.pop("eeg_windows", None)
+            window_counts = batch.pop("window_counts", None)
+
+            outputs = model(
+                input_ids=batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+                labels=batch["labels"],
+                eeg_windows=eeg_windows_b if eeg_windows_b is not None and eeg_windows_b.numel() > 0 else None,
+                window_counts=window_counts,
+            )
+
+            logits = outputs.logits
+            B = batch["labels"].shape[0]
+
+            for i in range(B):
+                label_row = batch["labels"][i]
+                target_positions = [
+                    pos for pos in range(len(label_row))
+                    if label_row[pos].item() in target_id_to_label
+                ]
+
+                # Last 2 target positions = eval trial's (EEG-only, Final)
+                if len(target_positions) >= 2:
+                    pos_eeg = target_positions[-2]
+                    eeg_logits_i = logits[i, pos_eeg - 1, target_id_tensor]
+                    eeg_p = F.softmax(eeg_logits_i, dim=0)
+                    eeg_full_pred = logits[i, pos_eeg - 1].argmax().item()
+                    eeg_only_preds.append(target_id_to_label.get(eeg_full_pred, -1))
+                    eeg_only_probs.append(eeg_p.cpu().float().numpy())
+
+                    pos_final = target_positions[-1]
+                    final_logits_i = logits[i, pos_final - 1, target_id_tensor]
+                    final_p = F.softmax(final_logits_i, dim=0)
+                    final_full_pred = logits[i, pos_final - 1].argmax().item()
+                    final_preds.append(target_id_to_label.get(final_full_pred, -1))
+                    final_probs.append(final_p.cpu().float().numpy())
+                else:
+                    eeg_only_preds.append(-1)
+                    eeg_only_probs.append(np.zeros(40))
+                    final_preds.append(-1)
+                    final_probs.append(np.zeros(40))
+
+        if (start_idx // batch_size) % 20 == 0:
+            print(f"  Processed {end_idx}/{N} trials...")
+
+    true_labels_np = labels.numpy()
+    fbcca_top1 = fbcca_indices[:, 0, 0].numpy()
+    subject_ids_np = subject_ids.numpy()
+
+    return {
+        "eeg_only_preds": np.array(eeg_only_preds),
+        "eeg_only_probs": np.array(eeg_only_probs),
+        "final_preds": np.array(final_preds),
+        "final_probs": np.array(final_probs),
+        "true_labels": true_labels_np,
+        "fbcca_top1": fbcca_top1,
+        "subject_ids": subject_ids_np,
+        "two_step": True,
+    }
+
+
 def filter_results_by_char_type(results, keep="letters"):
     """Filter evaluation results by character type.
 
@@ -535,6 +724,9 @@ def main():
                         help="Directory with fine-tuned REVE LoRA (from finetune_reve.py)")
     parser.add_argument("--letters_only", action="store_true",
                         help="Evaluate only letter targets (A-Z, indices 0-25), excluding digits and special chars")
+    parser.add_argument("--spells", type=int, default=1,
+                        help="Spells per sequence (1=single-spell, >1=multi-spell with context). "
+                             "Each trial gets spells-1 random context spells from the same group.")
     args = parser.parse_args()
     if args.no_modelscope:
         args.from_modelscope = False
@@ -556,6 +748,11 @@ def main():
     # Determine durations to evaluate
     durations = args.durations if args.durations else [args.trial_duration]
 
+    # Select evaluation function based on --spells
+    eval_fn = run_evaluation if args.spells <= 1 else run_multispell_evaluation
+    eval_extra = {"num_spells": args.spells} if args.spells > 1 else {}
+    eval_bs = min(args.batch_size, 4) if args.spells > 1 else args.batch_size
+
     if len(durations) > 1:
         # Multi-duration comparison mode
         results_by_duration = {}
@@ -564,14 +761,15 @@ def main():
             print(f"Evaluating duration: {dur}s ({int(dur*200)}pts)")
             print(f"{'='*60}")
 
-            results = run_evaluation(
+            results = eval_fn(
                 model, tokenizer,
                 eeg_dir=args.eeg_dir,
                 device=device,
                 exclude_bad=not args.no_exclude_bad,
-                batch_size=args.batch_size,
+                batch_size=eval_bs,
                 trial_duration=dur,
                 decoder_type=args.decoder_type,
+                **eval_extra,
             )
 
             if args.letters_only:
@@ -607,15 +805,17 @@ def main():
     else:
         # Single-duration mode (full output)
         dur = durations[0]
-        print("Running evaluation...")
-        results = run_evaluation(
+        spells_str = f" ({args.spells} spells/seq)" if args.spells > 1 else ""
+        print(f"Running evaluation{spells_str}...")
+        results = eval_fn(
             model, tokenizer,
             eeg_dir=args.eeg_dir,
             device=device,
             exclude_bad=not args.no_exclude_bad,
-            batch_size=args.batch_size,
+            batch_size=eval_bs,
             trial_duration=dur,
             decoder_type=args.decoder_type,
+            **eval_extra,
         )
 
         if args.letters_only:
