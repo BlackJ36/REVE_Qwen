@@ -136,6 +136,10 @@ class FBCCAFeatureExtractor(nn.Module):
         """
         B, C, T = eeg.shape
 
+        # FBCCA requires float32 for linalg.solve/eigvalsh precision
+        # (AMP autocast doesn't auto-promote inside @torch.no_grad)
+        eeg = eeg.float()
+
         # FFT once, reuse for all sub-bands
         eeg_fft = torch.fft.rfft(eeg, dim=-1)  # (B, C, n_fft)
 
