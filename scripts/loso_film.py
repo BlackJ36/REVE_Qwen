@@ -177,7 +177,8 @@ def train_one_fold(subject_id, args, device):
         val_acc = correct / total
         val_top5 = top5_correct / total
 
-        if val_loss < best_val_loss:
+        improved = val_loss < best_val_loss
+        if improved:
             best_val_loss = val_loss
             best_val_acc = val_acc
             best_val_top5 = val_top5
@@ -186,8 +187,14 @@ def train_one_fold(subject_id, args, device):
             torch.save(model.state_dict(), fold_dir / "best_model.pt")
         else:
             patience_counter += 1
-            if patience_counter >= args.patience:
-                break
+
+        marker = " *" if improved else ""
+        print(f"  E{epoch+1:02d} val_loss={val_loss:.4f} acc={val_acc:.1%} "
+              f"top5={val_top5:.1%} pat={patience_counter}{marker}", flush=True)
+
+        if patience_counter >= args.patience:
+            print(f"  Early stop at epoch {epoch+1}")
+            break
 
     # Reload best and get final predictions
     model.load_state_dict(
