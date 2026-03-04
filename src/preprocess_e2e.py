@@ -108,24 +108,28 @@ def preprocess_and_save_tensors(samples, desc="Processing"):
         labels: (N,) long tensor
         subject_ids: (N,) long tensor
         block_ids: (N,) long tensor
+        valid_pts: (N,) long tensor - real (non-padded) timepoints per trial
     """
     all_eeg = []
     all_labels = []
     all_subjects = []
     all_blocks = []
+    all_valid_pts = []
 
     for subj_id, block_id, trial_data, label in tqdm(samples, desc=desc):
-        processed = preprocess_trial(trial_data)  # (62, 600)
+        processed, valid_pts = preprocess_trial(trial_data)  # (62, 600), int
         all_eeg.append(processed)
         all_labels.append(label)
         all_subjects.append(subj_id)
         all_blocks.append(block_id)
+        all_valid_pts.append(valid_pts)
 
     eeg_data = torch.tensor(np.stack(all_eeg), dtype=torch.float32)
     labels = torch.tensor(all_labels, dtype=torch.long)
     subject_ids = torch.tensor(all_subjects, dtype=torch.long)
     block_ids = torch.tensor(all_blocks, dtype=torch.long)
-    return eeg_data, labels, subject_ids, block_ids
+    valid_pts = torch.tensor(all_valid_pts, dtype=torch.long)
+    return eeg_data, labels, subject_ids, block_ids, valid_pts
 
 
 def main():
@@ -179,12 +183,12 @@ def main():
 
     # Preprocess and save
     print(f"\nProcessing train samples ({len(all_train_samples)})...")
-    train_eeg, train_labels, train_subj, train_blocks = preprocess_and_save_tensors(
+    train_eeg, train_labels, train_subj, train_blocks, train_valid = preprocess_and_save_tensors(
         all_train_samples, "Train",
     )
 
     print(f"Processing val samples ({len(all_val_samples)})...")
-    val_eeg, val_labels, val_subj, val_blocks = preprocess_and_save_tensors(
+    val_eeg, val_labels, val_subj, val_blocks, val_valid = preprocess_and_save_tensors(
         all_val_samples, "Val",
     )
 
@@ -194,6 +198,7 @@ def main():
             "labels": train_labels,
             "subject_ids": train_subj,
             "block_ids": train_blocks,
+            "valid_pts": train_valid,
             "channel_names": VALID_CHANNEL_NAMES,
         },
         output_dir / "train_eeg.pt",
@@ -204,6 +209,7 @@ def main():
             "labels": val_labels,
             "subject_ids": val_subj,
             "block_ids": val_blocks,
+            "valid_pts": val_valid,
             "channel_names": VALID_CHANNEL_NAMES,
         },
         output_dir / "val_eeg.pt",
@@ -231,6 +237,13 @@ def main():
     print(f"  val_eeg.pt: {val_eeg.shape} ({val_eeg.element_size() * val_eeg.nelement() / 1e6:.1f} MB)")
     print(f"  Train groups (subject, block): {train_groups}")
     print(f"  Val groups (subject, block): {val_groups}")
+
+    # Report valid_pts distribution (detect zero-padded trials)
+    for name, vp in [("Train", train_valid), ("Val", val_valid)]:
+        n_short = int((vp < TARGET_LENGTH).sum())
+        if n_short > 0:
+            print(f"  {name}: {n_short}/{len(vp)} trials are zero-padded "
+                  f"(valid_pts={vp.min().item()}-{vp.max().item()})")
 
 
 if __name__ == "__main__":

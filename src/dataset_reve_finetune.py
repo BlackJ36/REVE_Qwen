@@ -49,10 +49,18 @@ class REVEFinetuneDataset(Dataset):
         self.eeg_data = data["eeg_data"]    # (N, 62, T)
         self.labels = data["labels"]         # (N,)
 
+        # Per-trial valid timepoints (handles zero-padded BETA S01-S19)
+        if "valid_pts" in data:
+            self.valid_pts = data["valid_pts"]  # (N,)
+        else:
+            # Backward compat: assume all timepoints are valid
+            self.valid_pts = torch.full((len(self.labels),), self.eeg_data.shape[2], dtype=torch.long)
+
         # Skip SSVEP transient response (0.14s @ 200Hz = 28 pts)
         self.latency_pts = int(SSVEP_LATENCY_S * 200) if latency_skip else 0
-        available = self.eeg_data.shape[2] - self.latency_pts
-        self.trial_duration_pts = min(trial_duration_pts, available)
+        # Global trial duration capped by shortest valid trial
+        min_valid = int(self.valid_pts.min()) - self.latency_pts
+        self.trial_duration_pts = min(trial_duration_pts, min_valid)
 
         # Load eTRCA full scores for knowledge distillation
         self.etrca_scores = None

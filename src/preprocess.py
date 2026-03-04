@@ -138,25 +138,29 @@ TARGET_LENGTH = 600  # 3 seconds at 200Hz
 
 
 def preprocess_trial(trial_data, orig_sfreq=250):
-    """Filter and resample a single trial. Output: (62, TARGET_LENGTH) at 200Hz.
+    """Filter and resample a single trial. Output: (eeg, valid_pts).
+
+    eeg: (62, TARGET_LENGTH) at 200Hz, zero-padded if needed.
+    valid_pts: int, number of real (non-padded) timepoints.
 
     Input already has visual cue period removed:
       Benchmark: 1375 @ 250Hz (5.5s stimulus) -> filter -> resample -> 1100 -> first 600
-      BETA: 625 @ 250Hz (2s stimulus + 0.5s rest) -> filter -> resample -> 500 -> pad to 600
+      BETA S01-S19: 625 @ 250Hz (2.5s stimulus) -> filter -> resample -> 500 -> pad to 600
+      BETA S20-S70: 875 @ 250Hz (3.5s stimulus) -> filter -> resample -> 700 -> first 600
     """
     filtered = bandpass_filter(trial_data, orig_sfreq)
     resampled = resample_data(filtered, orig_sfreq, REVE_SFREQ)
 
+    valid_pts = min(resampled.shape[1], TARGET_LENGTH)
+
     # Truncate or pad to TARGET_LENGTH
     if resampled.shape[1] > TARGET_LENGTH:
-        # Take the first 600 samples (cue already removed, starts at stimulus onset)
         resampled = resampled[:, :TARGET_LENGTH]
     elif resampled.shape[1] < TARGET_LENGTH:
-        # BETA: 500 pts of real data, pad to 600
         pad_width = TARGET_LENGTH - resampled.shape[1]
         resampled = np.pad(resampled, ((0, 0), (0, pad_width)), mode='constant')
 
-    return resampled
+    return resampled, valid_pts
 
 
 def load_reve_model(device="cuda"):
@@ -216,7 +220,7 @@ def extract_reve_embeddings(
         labels_batch = []
 
         for subj_id, trial_data, label in batch:
-            processed = preprocess_trial(trial_data)
+            processed, _ = preprocess_trial(trial_data)
             eeg_batch.append(processed)
             labels_batch.append(label)
 

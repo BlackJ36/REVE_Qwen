@@ -109,9 +109,16 @@ class CandidateStage1Dataset(Dataset):
         self.block_ids = data["block_ids"]
         N = len(self.labels)
 
+        # Per-trial valid timepoints (handles zero-padded BETA S01-S19)
+        if "valid_pts" in data:
+            self.valid_pts = data["valid_pts"]
+        else:
+            self.valid_pts = torch.full((N,), self.eeg_data.shape[2], dtype=torch.long)
+
         # Truncate EEG to requested duration
         if trial_duration_pts < self.eeg_data.shape[2]:
             self.eeg_data = self.eeg_data[:, :, :trial_duration_pts]
+            self.valid_pts = self.valid_pts.clamp(max=trial_duration_pts)
 
         # Load precomputed decoder candidates (duration-aware filename)
         # Supports: fbcca, trca, etrca
@@ -212,13 +219,18 @@ class CandidateStage1Dataset(Dataset):
         for trial_idx in chosen_indices:
             target_indices.append(int(self.labels[trial_idx]))
 
-            # Pick random window offset
-            offset_idx = random.randrange(len(self.window_offsets))
+            # Filter offsets to stay within valid (non-padded) data
+            vp = int(self.valid_pts[trial_idx])
+            valid_oidx = [i for i, o in enumerate(self.window_offsets)
+                          if o + self.window_size <= vp]
+            if not valid_oidx:
+                valid_oidx = [0]
+            offset_idx = random.choice(valid_oidx)
             offset = self.window_offsets[offset_idx]
             window = self.eeg_data[trial_idx, :, offset:offset + self.window_size]
             eeg_windows.append(window)
 
-            # Look up precomputed FBCCA for this trial + offset
+            # Look up precomputed decoder candidates for this trial + offset
             top3_idx = self.cand_top3_indices[trial_idx, offset_idx].tolist()  # [3]
             top3_sc = self.cand_top3_scores[trial_idx, offset_idx].tolist()    # [3]
             fbcca_candidates.append((top3_idx, top3_sc))
@@ -407,9 +419,16 @@ class CandidateStage2Dataset(Dataset):
         self.block_ids = data["block_ids"]
         N = len(self.labels)
 
+        # Per-trial valid timepoints (handles zero-padded BETA S01-S19)
+        if "valid_pts" in data:
+            self.valid_pts = data["valid_pts"]
+        else:
+            self.valid_pts = torch.full((N,), self.eeg_data.shape[2], dtype=torch.long)
+
         # Truncate EEG to requested duration
         if trial_duration_pts < self.eeg_data.shape[2]:
             self.eeg_data = self.eeg_data[:, :, :trial_duration_pts]
+            self.valid_pts = self.valid_pts.clamp(max=trial_duration_pts)
 
         # Load precomputed decoder candidates (duration-aware filename)
         self.decoder_type = decoder_type
@@ -520,12 +539,18 @@ class CandidateStage2Dataset(Dataset):
             return self._make_word_sequence()
 
     def _get_trial_for_label(self, group_key, label):
-        """Find a trial with the given label in the group. Returns (trial_idx, offset_idx, window, fbcca)."""
+        """Find a trial with the given label in the group. Returns (window, fbcca_candidates)."""
         trials = self.label_to_trials[group_key].get(label, [])
         if not trials:
             return None
         trial_idx = random.choice(trials)
-        offset_idx = random.randrange(len(self.window_offsets))
+        # Filter offsets to stay within valid (non-padded) data
+        vp = int(self.valid_pts[trial_idx])
+        valid_oidx = [i for i, o in enumerate(self.window_offsets)
+                      if o + self.window_size <= vp]
+        if not valid_oidx:
+            valid_oidx = [0]
+        offset_idx = random.choice(valid_oidx)
         offset = self.window_offsets[offset_idx]
         window = self.eeg_data[trial_idx, :, offset:offset + self.window_size]
         top3_idx = self.cand_top3_indices[trial_idx, offset_idx].tolist()

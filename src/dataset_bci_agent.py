@@ -33,18 +33,15 @@ BETA_BAD_SUBJECTS = {11, 41, 55, 59, 64}
 def _filter_by_subjects(data, exclude_subjects):
     """Filter .pt data dict, removing trials from excluded subjects.
 
-    Returns filtered (eeg_data, labels, subject_ids, block_ids) and count removed.
+    Returns filtered data dict (all tensor keys masked) and count removed.
     """
     mask = torch.ones(len(data["labels"]), dtype=torch.bool)
     for sid in exclude_subjects:
         mask &= data["subject_ids"] != sid
     n_removed = int((~mask).sum())
-    return {
-        "eeg_data": data["eeg_data"][mask],
-        "labels": data["labels"][mask],
-        "subject_ids": data["subject_ids"][mask],
-        "block_ids": data["block_ids"][mask],
-    }, n_removed
+    filtered = {k: v[mask] if isinstance(v, torch.Tensor) else v
+                for k, v in data.items()}
+    return filtered, n_removed
 
 
 class BCIAgentStage1Dataset(Dataset):
@@ -92,14 +89,21 @@ class BCIAgentStage1Dataset(Dataset):
             print(f"[{split}] Excluded subjects {exclude_subjects}: removed {n_removed} trials")
         self.eeg_data = data["eeg_data"]       # (N, 62, total_T)
 
+        # Per-trial valid timepoints (handles zero-padded BETA S01-S19)
+        if "valid_pts" in data:
+            self.valid_pts = data["valid_pts"]  # (N,)
+        else:
+            self.valid_pts = torch.full((len(data["labels"]),), self.eeg_data.shape[2], dtype=torch.long)
+
         # Truncate EEG to requested duration
         if trial_duration_pts < self.eeg_data.shape[2]:
             self.eeg_data = self.eeg_data[:, :, :trial_duration_pts]
+            self.valid_pts = self.valid_pts.clamp(max=trial_duration_pts)
         self.labels = data["labels"]           # (N,)
         self.subject_ids = data["subject_ids"] # (N,)
         self.block_ids = data["block_ids"]     # (N,)
 
-        # Sliding window offsets
+        # Sliding window offsets (global, per-trial filtering in __getitem__)
         total_timepoints = self.eeg_data.shape[2]
         self.window_offsets = []
         start = 0
@@ -155,7 +159,12 @@ class BCIAgentStage1Dataset(Dataset):
         target_indices = []
         for trial_idx in chosen_indices:
             target_indices.append(int(self.labels[trial_idx]))
-            offset = random.choice(self.window_offsets)
+            # Filter offsets to stay within valid (non-padded) data
+            vp = int(self.valid_pts[trial_idx])
+            valid_offsets = [o for o in self.window_offsets if o + self.window_size <= vp]
+            if not valid_offsets:
+                valid_offsets = [0]  # fallback: use first window
+            offset = random.choice(valid_offsets)
             window = self.eeg_data[trial_idx, :, offset:offset + self.window_size]
             eeg_windows.append(window)
 
@@ -262,14 +271,21 @@ class BCIAgentStage2Dataset(Dataset):
             print(f"[{split}] Excluded subjects {exclude_subjects}: removed {n_removed} trials")
         self.eeg_data = data["eeg_data"]
 
+        # Per-trial valid timepoints (handles zero-padded BETA S01-S19)
+        if "valid_pts" in data:
+            self.valid_pts = data["valid_pts"]
+        else:
+            self.valid_pts = torch.full((len(data["labels"]),), self.eeg_data.shape[2], dtype=torch.long)
+
         # Truncate EEG to requested duration
         if trial_duration_pts < self.eeg_data.shape[2]:
             self.eeg_data = self.eeg_data[:, :, :trial_duration_pts]
+            self.valid_pts = self.valid_pts.clamp(max=trial_duration_pts)
         self.labels = data["labels"]
         self.subject_ids = data["subject_ids"]
         self.block_ids = data["block_ids"]
 
-        # Sliding window offsets
+        # Sliding window offsets (global, per-trial filtering in __getitem__)
         total_timepoints = self.eeg_data.shape[2]
         self.window_offsets = []
         start = 0
@@ -345,7 +361,12 @@ class BCIAgentStage2Dataset(Dataset):
         label_indices = []
         for trial_idx in chosen:
             label_indices.append(int(self.labels[trial_idx]))
-            offset = random.choice(self.window_offsets)
+            # Filter offsets to stay within valid (non-padded) data
+            vp = int(self.valid_pts[trial_idx])
+            valid_offsets = [o for o in self.window_offsets if o + self.window_size <= vp]
+            if not valid_offsets:
+                valid_offsets = [0]
+            offset = random.choice(valid_offsets)
             window = self.eeg_data[trial_idx, :, offset:offset + self.window_size]
             eeg_windows.append(window)
 
