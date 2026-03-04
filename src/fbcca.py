@@ -125,6 +125,7 @@ class FBCCAFeatureExtractor(nn.Module):
         self.register_buffer("band_weights", torch.tensor(BAND_WEIGHTS, dtype=torch.float32))
 
     @torch.no_grad()
+    @torch.amp.autocast("cuda", enabled=False)
     def forward(self, eeg):
         """Extract FBCCA features from raw EEG.
 
