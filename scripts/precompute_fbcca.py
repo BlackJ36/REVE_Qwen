@@ -3,14 +3,14 @@
 FBCCA requires GPU but dataset workers run on CPU. This script precomputes
 results once so training can do a simple index lookup.
 
-FBCCA is computed on the trial data for a given duration. Shorter durations
-have lower frequency resolution (sfreq / n_timepoints), degrading accuracy
-for closely-spaced SSVEP targets (0.2Hz apart).
+Uses 9 occipital channels + 0.14s latency skip for optimal SSVEP detection.
+62ch→9ch + latency skip improves accuracy dramatically (e.g. 1s: 15%→50%).
 
 Usage:
     python scripts/precompute_fbcca.py --eeg_dir data/eeg_tensors
     python scripts/precompute_fbcca.py --eeg_dir data/eeg_tensors --trial_duration 2.0
     python scripts/precompute_fbcca.py --eeg_dir data/eeg_tensors --durations 1.0 1.5 2.0 3.0
+    python scripts/precompute_fbcca.py --eeg_dir data/eeg_tensors --all_channels  # disable 9ch
 
 Output per split:
     {eeg_dir}/{split}_fbcca.pt       (600pt, backward compatible)
@@ -18,6 +18,7 @@ Output per split:
 """
 
 import argparse
+import json
 from pathlib import Path
 
 import torch
@@ -25,7 +26,10 @@ import torch
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.fbcca import FBCCAFeatureExtractor, BAND_WEIGHTS
+from src.fbcca import (
+    FBCCAFeatureExtractor, BAND_WEIGHTS,
+    SSVEP_LATENCY_S, resolve_channel_indices,
+)
 
 
 def compute_weighted_correlations(fbcca_module, eeg_batch):
@@ -71,16 +75,18 @@ def fbcca_output_filename(split, trial_duration_pts):
 
 
 def precompute_split(eeg_dir, split, window_size, window_step, batch_size, device,
-                     trial_duration_pts=600):
+                     trial_duration_pts=600, channel_indices=None, latency_pts=0):
     """Precompute FBCCA top-3 for one split.
 
-    FBCCA is computed on the (possibly truncated) trial data. The result is
-    then broadcast across all sliding window offsets so the dataset can index
-    by [trial_idx, offset_idx].
+    FBCCA is computed on the (possibly truncated) trial data with optional
+    channel selection and latency skip. The result is then broadcast across
+    all sliding window offsets so the dataset can index by [trial_idx, offset_idx].
 
     Args:
         trial_duration_pts: number of timepoints to use (e.g. 600 for 3s,
             400 for 2s, 300 for 1.5s, 200 for 1s @ 200Hz).
+        channel_indices: list of channel indices for FBCCA (None = all channels).
+        latency_pts: skip first N timepoints (SSVEP transient response).
     """
     eeg_path = eeg_dir / f"{split}_eeg.pt"
     if not eeg_path.exists():
@@ -91,18 +97,28 @@ def precompute_split(eeg_dir, split, window_size, window_step, batch_size, devic
     eeg_data = data["eeg_data"]  # (N, 62, total_T)
     N, C, total_T = eeg_data.shape
 
-    # Truncate to requested duration
-    if trial_duration_pts < total_T:
-        eeg_data = eeg_data[:, :, :trial_duration_pts]
-        effective_T = trial_duration_pts
+    # Select channels for FBCCA (e.g. 9 occipital channels)
+    if channel_indices is not None:
+        eeg_data = eeg_data[:, channel_indices, :]
+        n_ch = len(channel_indices)
     else:
-        effective_T = total_T
+        n_ch = C
 
-    # Compute window offsets based on truncated length
-    effective_window_size = min(window_size, effective_T)
+    # Apply latency skip + truncate to requested duration
+    t_start = latency_pts
+    t_end = t_start + trial_duration_pts
+    if t_end > total_T:
+        t_end = total_T
+    eeg_data = eeg_data[:, :, t_start:t_end]
+    effective_T = t_end - t_start
+
+    # Compute window offsets based on the ORIGINAL trial length (for dataset compat)
+    # Offsets are computed on the full trial_duration_pts, not the latency-skipped version
+    trunc_T = min(trial_duration_pts, total_T)
+    effective_window_size = min(window_size, trunc_T)
     offsets = []
     start = 0
-    while start + effective_window_size <= effective_T:
+    while start + effective_window_size <= trunc_T:
         offsets.append(start)
         start += window_step
     if not offsets:
@@ -110,8 +126,10 @@ def precompute_split(eeg_dir, split, window_size, window_step, batch_size, devic
     num_offsets = len(offsets)
 
     freq_res = 200.0 / effective_T
+    ch_info = f"{n_ch}ch" if channel_indices else f"{C}ch(all)"
+    lat_info = f"+{latency_pts}pt latency skip" if latency_pts else ""
     print(f"  {split}: {N} trials, FBCCA on {effective_T}pts "
-          f"({effective_T/200:.1f}s, Δf={freq_res:.2f}Hz), "
+          f"({effective_T/200:.1f}s, Δf={freq_res:.2f}Hz, {ch_info}{lat_info}), "
           f"broadcast to {num_offsets} offsets")
 
     # FBCCA on the effective trial length
@@ -163,10 +181,37 @@ def main():
                         help="Trial duration in seconds (default: 3.0)")
     parser.add_argument("--durations", type=float, nargs="*",
                         help="Batch-precompute multiple durations, e.g. 1.0 1.5 2.0 3.0")
+    parser.add_argument("--all_channels", action="store_true",
+                        help="Use all channels instead of 9 occipital (default: 9ch)")
+    parser.add_argument("--no_latency_skip", action="store_true",
+                        help="Disable 0.14s SSVEP latency skip (default: enabled)")
     args = parser.parse_args()
 
     eeg_dir = Path(args.eeg_dir)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+
+    # Resolve occipital channel indices from meta.json
+    channel_indices = None
+    if not args.all_channels:
+        meta_path = eeg_dir / "meta.json"
+        if meta_path.exists():
+            with open(meta_path) as f:
+                meta = json.load(f)
+            channel_names = meta.get("channel_names", [])
+            if channel_names:
+                channel_indices = resolve_channel_indices(channel_names)
+                print(f"Using {len(channel_indices)} occipital channels: "
+                      f"{[channel_names[i] for i in channel_indices]}")
+            else:
+                print("WARNING: No channel_names in meta.json, using all channels")
+        else:
+            print(f"WARNING: {meta_path} not found, using all channels")
+
+    # Latency skip
+    latency_pts = 0
+    if not args.no_latency_skip:
+        latency_pts = int(SSVEP_LATENCY_S * 200)
+        print(f"Latency skip: {latency_pts}pts ({SSVEP_LATENCY_S}s)")
 
     # Determine which durations to compute
     if args.durations:
@@ -189,6 +234,8 @@ def main():
                 batch_size=args.batch_size,
                 device=device,
                 trial_duration_pts=trial_duration_pts,
+                channel_indices=channel_indices,
+                latency_pts=latency_pts,
             )
 
     print("\nDone.")

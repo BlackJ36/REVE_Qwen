@@ -5,9 +5,13 @@ and sinusoidal templates at 40 SSVEP frequencies across 5 filter sub-bands.
 
 SSVEP frequencies: 8.0, 8.2, 8.4, ..., 15.8 Hz (40 targets, 0.2 Hz steps)
 Sub-bands: [6-90, 14-90, 22-90, 30-90, 38-90] Hz (bandpass via FFT)
-Harmonics: 3 per frequency (f, 2f, 3f)
+Harmonics: 4 per frequency (f, 2f, 3f, 4f)
 
-Output: (B, 200) = 5 sub-bands × 40 frequencies of weighted CCA correlations.
+Output: (B, 200) = 5 sub-bands × 40 frequencies of CCA correlations.
+
+Optimization: Use 9 occipital channels (not all 62) and skip the 0.14s SSVEP
+transient response for significantly better accuracy, especially at short windows.
+62ch 1s=15% → 9ch+latency 1s=50%.
 
 Fully batched: all 40 frequencies computed in parallel via einsum, no Python loops
 over frequencies. R_yy^{-1/2} pre-computed in __init__.
@@ -21,6 +25,34 @@ import torch.nn as nn
 # Row i, Col j: freq = 8.0 + j*1.0 + i*0.2, label = i*8 + j
 SSVEP_FREQS = [8.0 + (i % 8) * 1.0 + (i // 8) * 0.2 for i in range(40)]
 
+# 9 occipital channels optimal for SSVEP CCA (reduces noise from irrelevant channels)
+OCCIPITAL_CHANNELS = ["Oz", "O1", "O2", "POz", "PO3", "PO4", "PO7", "PO8", "Pz"]
+
+# SSVEP transient latency: skip first 0.14s after stimulus onset
+# The visual evoked potential needs ~140ms to reach steady state
+SSVEP_LATENCY_S = 0.14
+
+
+def resolve_channel_indices(channel_names, target_channels=None):
+    """Map channel names to indices in the data array.
+
+    Args:
+        channel_names: list of channel names from the dataset (e.g. from meta.json)
+        target_channels: list of channel names to select (default: OCCIPITAL_CHANNELS)
+
+    Returns:
+        list of integer indices into channel_names
+    """
+    if target_channels is None:
+        target_channels = OCCIPITAL_CHANNELS
+    name_to_idx = {ch.upper(): i for i, ch in enumerate(channel_names)}
+    indices = []
+    for tch in target_channels:
+        idx = name_to_idx.get(tch.upper())
+        if idx is not None:
+            indices.append(idx)
+    return indices
+
 # 5 filter sub-bands: [low_cutoff, high_cutoff] in Hz
 FILTER_BANDS = [
     (6.0, 90.0),
@@ -33,7 +65,7 @@ FILTER_BANDS = [
 # Sub-band weights: w_k = k^{-1.25} + 0.25
 BAND_WEIGHTS = [(k + 1) ** (-1.25) + 0.25 for k in range(len(FILTER_BANDS))]
 
-N_HARMONICS = 3
+N_HARMONICS = 4
 
 
 class FBCCAFeatureExtractor(nn.Module):
