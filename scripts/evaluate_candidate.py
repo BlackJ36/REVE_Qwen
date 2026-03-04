@@ -171,6 +171,12 @@ def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_si
         )
     fbcca_data = torch.load(cand_path, weights_only=True)
 
+    # Per-trial valid timepoints (handles zero-padded BETA S01-S19)
+    if "valid_pts" in data:
+        valid_pts = data["valid_pts"]
+    else:
+        valid_pts = torch.full((len(data["labels"]),), data["eeg_data"].shape[2], dtype=torch.long)
+
     if exclude_bad:
         mask = torch.ones(len(data["labels"]), dtype=torch.bool)
         for sid in exclude_subjects:
@@ -178,6 +184,7 @@ def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_si
         labels = data["labels"][mask]
         subject_ids = data["subject_ids"][mask]
         eeg_data = data["eeg_data"][mask]
+        valid_pts = valid_pts[mask]
         fbcca_indices = fbcca_data["top3_indices"][mask]
         fbcca_scores = fbcca_data["top3_scores"][mask]
     else:
@@ -187,8 +194,14 @@ def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_si
         fbcca_indices = fbcca_data["top3_indices"]
         fbcca_scores = fbcca_data["top3_scores"]
 
+    if trial_duration_pts < eeg_data.shape[2]:
+        eeg_data = eeg_data[:, :, :trial_duration_pts]
+        valid_pts = valid_pts.clamp(max=trial_duration_pts)
+
     N = len(labels)
-    print(f"\nEvaluating {N} trials (duration={trial_duration}s, {trial_duration_pts}pts)...")
+    n_short = int((valid_pts < trial_duration_pts).sum())
+    short_info = f", {n_short} zero-padded" if n_short > 0 else ""
+    print(f"\nEvaluating {N} trials (duration={trial_duration}s, {trial_duration_pts}pts{short_info})...")
 
     # Get target token IDs
     target_token_ids = {
@@ -213,7 +226,11 @@ def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_si
 
         for trial_idx in range(start_idx, end_idx):
             label = int(labels[trial_idx])
-            offset_idx = 0
+            # Pick first valid offset (within non-padded data)
+            vp = int(valid_pts[trial_idx])
+            valid_oidx = [i for i, o in enumerate(dataset.window_offsets)
+                          if o + effective_window_size <= vp]
+            offset_idx = valid_oidx[0] if valid_oidx else 0
             offset = dataset.window_offsets[offset_idx]
             window = eeg_data[trial_idx, :, offset:offset + effective_window_size]
 
@@ -357,6 +374,12 @@ def run_multispell_evaluation(model, tokenizer, eeg_dir, device, num_spells=5,
         cand_filename = f"val_{decoder_type}_{trial_duration_pts}pt.pt"
     fbcca_data = torch.load(Path(eeg_dir) / cand_filename, weights_only=True)
 
+    # Per-trial valid timepoints (handles zero-padded BETA S01-S19)
+    if "valid_pts" in data:
+        valid_pts = data["valid_pts"]
+    else:
+        valid_pts = torch.full((len(data["labels"]),), data["eeg_data"].shape[2], dtype=torch.long)
+
     if exclude_bad:
         mask = torch.ones(len(data["labels"]), dtype=torch.bool)
         for sid in exclude_subjects:
@@ -365,6 +388,7 @@ def run_multispell_evaluation(model, tokenizer, eeg_dir, device, num_spells=5,
         subject_ids = data["subject_ids"][mask]
         block_ids = data["block_ids"][mask]
         eeg_data = data["eeg_data"][mask]
+        valid_pts = valid_pts[mask]
         fbcca_indices = fbcca_data["top3_indices"][mask]
         fbcca_scores = fbcca_data["top3_scores"][mask]
     else:
@@ -374,6 +398,10 @@ def run_multispell_evaluation(model, tokenizer, eeg_dir, device, num_spells=5,
         eeg_data = data["eeg_data"]
         fbcca_indices = fbcca_data["top3_indices"]
         fbcca_scores = fbcca_data["top3_scores"]
+
+    if trial_duration_pts < eeg_data.shape[2]:
+        eeg_data = eeg_data[:, :, :trial_duration_pts]
+        valid_pts = valid_pts.clamp(max=trial_duration_pts)
 
     N = len(labels)
 
@@ -441,7 +469,13 @@ def run_multispell_evaluation(model, tokenizer, eeg_dir, device, num_spells=5,
             for label in label_indices:
                 trials = label_to_trials[group_key][label]
                 trial_idx = py_random.choice(trials)
-                offset_idx = py_random.randrange(len(dataset.window_offsets))
+                # Filter offsets to stay within valid (non-padded) data
+                vp = int(valid_pts[trial_idx])
+                valid_oidx = [i for i, o in enumerate(dataset.window_offsets)
+                              if o + effective_window_size <= vp]
+                if not valid_oidx:
+                    valid_oidx = [0]
+                offset_idx = py_random.choice(valid_oidx)
                 offset = dataset.window_offsets[offset_idx]
                 window = eeg_data[trial_idx, :, offset:offset + effective_window_size]
                 eeg_windows.append(window)
