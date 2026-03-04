@@ -82,11 +82,11 @@ def train_one_fold(subject_id, args, device):
 
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True,
-        num_workers=4, pin_memory=True, collate_fn=reve_finetune_collate_fn,
+        num_workers=args.num_workers, pin_memory=True, collate_fn=reve_finetune_collate_fn,
     )
     test_loader = DataLoader(
         test_ds, batch_size=args.batch_size, shuffle=False,
-        num_workers=4, pin_memory=True, collate_fn=reve_finetune_collate_fn,
+        num_workers=args.num_workers, pin_memory=True, collate_fn=reve_finetune_collate_fn,
     )
 
     # Build model (fresh for each fold)
@@ -349,7 +349,8 @@ def main():
     # Training
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--patience", type=int, default=15)
-    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--batch_size", type=int, default=512)
+    parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--lr_reve", type=float, default=1e-5)
     parser.add_argument("--lr_film", type=float, default=3e-4)
     parser.add_argument("--lr_head", type=float, default=3e-4)
