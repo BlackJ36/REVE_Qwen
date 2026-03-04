@@ -346,10 +346,10 @@ def main():
     parser.add_argument("--random_offset", action="store_true", default=True)
     parser.add_argument("--no_random_offset", dest="random_offset", action="store_false")
 
-    # Training (bs=512 for GPU util, original lr, more epochs to compensate fewer steps)
+    # Training
     parser.add_argument("--epochs", type=int, default=120)
     parser.add_argument("--patience", type=int, default=20)
-    parser.add_argument("--batch_size", type=int, default=512)
+    parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--lr_reve", type=float, default=1e-5)
     parser.add_argument("--lr_film", type=float, default=3e-4)

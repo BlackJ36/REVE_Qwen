@@ -15,8 +15,8 @@ LOG_DIR="${CHECKPOINT_DIR}/logs"
 GPUS=(3 4 5 6 7)
 N_GPUS=${#GPUS[@]}
 
-# Training hyperparams (bs=512 for GPU util, original lr, more epochs for fewer steps)
-COMMON_ARGS="--checkpoint_dir ${CHECKPOINT_DIR} --batch_size 512 --epochs 120 --patience 20 --num_workers 2"
+# Training hyperparams
+COMMON_ARGS="--checkpoint_dir ${CHECKPOINT_DIR} --batch_size 128 --epochs 120 --patience 20 --num_workers 0"
 
 mkdir -p "${LOG_DIR}"
 
