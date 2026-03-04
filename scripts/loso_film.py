@@ -332,7 +332,7 @@ def main():
     parser.add_argument("--use_film", action="store_true", default=True)
     parser.add_argument("--no_film", dest="use_film", action="store_false")
     parser.add_argument("--film_scale", type=float, default=0.1)
-    parser.add_argument("--random_offset", action="store_true", default=True)
+    parser.add_argument("--random_offset", action="store_true", default=False)
     parser.add_argument("--no_random_offset", dest="random_offset", action="store_false")
 
     # Training
