@@ -105,6 +105,10 @@ def parse_args():
                         help="Trial duration in seconds (1.0/1.5/2.0/3.0). "
                              "Shorter = faster spelling but lower accuracy.")
 
+    # Channel selection
+    parser.add_argument("--occipital_only", action="store_true",
+                        help="Use only 9 occipital channels for REVE (default: all 62)")
+
     # DeepSpeed
     parser.add_argument("--deepspeed", type=str, default="configs/ds_zero2.json")
     parser.add_argument("--local_rank", type=int, default=-1)
@@ -133,6 +137,11 @@ def main():
 
     # Convert trial duration (seconds) to timepoints (@ 200Hz)
     trial_duration_pts = int(args.trial_duration * 200)
+
+    # Auto-adjust num_eeg_tokens for occipital-only mode
+    if args.occipital_only and args.num_eeg_tokens == 62:
+        args.num_eeg_tokens = 9
+        print(f"occipital_only: num_eeg_tokens auto-set to {args.num_eeg_tokens}")
 
     if args.stage == 1:
         batch_size = args.batch_size or 64
@@ -175,6 +184,7 @@ def main():
             lora_rank=args.s1_lora_rank,
             lora_alpha=args.s1_lora_alpha,
             reve_finetune_dir=args.reve_finetune_dir,
+            occipital_only=args.occipital_only,
             deepspeed_config=args.deepspeed,
         )
 
@@ -223,6 +233,7 @@ def main():
             early_stopping_patience=args.early_stopping_patience,
             unfreeze_last_n=args.unfreeze_last_n,
             reve_finetune_dir=args.reve_finetune_dir,
+            occipital_only=args.occipital_only,
             deepspeed_config=args.deepspeed,
         )
 

@@ -35,13 +35,27 @@ class FiLMHybridEncoder(nn.Module):
         dropout: dropout rate for the projector
     """
 
-    def __init__(self, backbone, fbcca, llm_dim, backbone_dim=512, fbcca_dim=200, dropout=0.3):
+    def __init__(self, backbone, fbcca, llm_dim, backbone_dim=512, fbcca_dim=200, dropout=0.3,
+                 backbone_channel_indices=None, fbcca_channel_indices=None):
         super().__init__()
         self.reve = backbone  # kept as "reve" for checkpoint compatibility
         self.fbcca = fbcca
         self.backbone_dim = backbone_dim
         self.fbcca_dim = fbcca_dim
         self.use_fbcca = fbcca is not None
+
+        # Decoupled channel selection: REVE and FBCCA can use different channels
+        # - backbone_channel_indices: channels for REVE (None = all 62)
+        # - fbcca_channel_indices: channels for FBCCA (None = all, but 9ch is optimal)
+        import torch
+        if backbone_channel_indices is not None:
+            self.register_buffer("backbone_ch_idx", torch.tensor(backbone_channel_indices, dtype=torch.long))
+        else:
+            self.backbone_ch_idx = None
+        if fbcca_channel_indices is not None:
+            self.register_buffer("fbcca_ch_idx", torch.tensor(fbcca_channel_indices, dtype=torch.long))
+        else:
+            self.fbcca_ch_idx = None
 
         if self.use_fbcca:
             # FiLM: FBCCA generates scale and shift for backbone features
@@ -67,18 +81,29 @@ class FiLMHybridEncoder(nn.Module):
         """Encode EEG windows via backbone + optional FBCCA FiLM + projection.
 
         Args:
-            eeg_windows: (total_K, 62, T) raw EEG windows at 200Hz
+            eeg_windows: (total_K, 62, T) raw EEG windows at 200Hz (full channels)
             output_dtype: optional dtype cast (e.g. bf16 for mixed precision)
 
         Returns:
-            (total_K, N, llm_dim) projected tokens. N=62 typically.
+            (total_K, N, llm_dim) projected tokens. N=n_channels typically.
         """
-        # Backbone: (B, 62, T) -> (B, N, backbone_dim)
-        backbone_out = self.reve(eeg_windows, output_dtype=output_dtype, pool=False)
+        # Channel selection for backbone (e.g. 62ch -> 9ch occipital)
+        if self.backbone_ch_idx is not None:
+            backbone_input = eeg_windows[:, self.backbone_ch_idx, :]
+        else:
+            backbone_input = eeg_windows
+
+        # Backbone: (B, C, T) -> (B, N, backbone_dim)
+        backbone_out = self.reve(backbone_input, output_dtype=output_dtype, pool=False)
 
         if self.use_fbcca:
-            # FBCCA: (B, 62, T) -> (B, 200) frequency correlations
-            fbcca_out = self.fbcca(eeg_windows)
+            # Channel selection for FBCCA (always 9ch occipital for best accuracy)
+            if self.fbcca_ch_idx is not None:
+                fbcca_input = eeg_windows[:, self.fbcca_ch_idx, :]
+            else:
+                fbcca_input = eeg_windows
+            # FBCCA: (B, C, T) -> (B, 200) frequency correlations
+            fbcca_out = self.fbcca(fbcca_input)
             if output_dtype is not None:
                 fbcca_out = fbcca_out.to(dtype=output_dtype)
 
@@ -113,6 +138,7 @@ def build_film_encoder(
     n_chans=62,
     unfreeze_last_n=0,
     reve_finetune_dir=None,
+    occipital_only=False,
 ):
     """Build a FiLMHybridEncoder with configurable backbone and FBCCA.
 
@@ -128,6 +154,8 @@ def build_film_encoder(
         reve_finetune_dir: directory containing REVE LoRA + pooling from finetune_reve.py.
             When provided, loads and merges LoRA into REVE base weights (zero runtime overhead).
             Only applicable for encoder_type="reve".
+        occipital_only: if True, use only 9 occipital channels for REVE (from 62ch input).
+            Reduces noise for SSVEP but fewer tokens. Only for encoder_type="reve".
 
     Returns:
         FiLMHybridEncoder instance
@@ -138,6 +166,7 @@ def build_film_encoder(
 
         from transformers import AutoModel
 
+        from .fbcca import OCCIPITAL_CHANNELS, resolve_channel_indices
         from .preprocess import VALID_CHANNEL_NAMES
 
         reve_dir = Path(reve_dir)
@@ -149,9 +178,18 @@ def build_film_encoder(
             str(reve_dir / "reve-base"), trust_remote_code=True,
         )
 
+        # Channel selection: 9 occipital or all 62
+        channel_indices = None
+        if occipital_only:
+            channel_indices = resolve_channel_indices(VALID_CHANNEL_NAMES, OCCIPITAL_CHANNELS)
+            reve_channel_names = [VALID_CHANNEL_NAMES[i] for i in channel_indices]
+            print(f"REVE occipital-only: {len(reve_channel_names)} channels {reve_channel_names}")
+        else:
+            reve_channel_names = VALID_CHANNEL_NAMES
+
         backbone = REVEWithUnfreeze(
             reve_model, pos_bank,
-            channel_names=VALID_CHANNEL_NAMES,
+            channel_names=reve_channel_names,
             unfreeze_last_n=unfreeze_last_n,
         )
         backbone_dim = 512
@@ -210,6 +248,13 @@ def build_film_encoder(
     else:
         print("FBCCA: disabled (backbone-only mode)")
 
+    # --- Channel indices for FBCCA (always 9ch occipital for optimal accuracy) ---
+    fbcca_channel_indices = None
+    if encoder_type == "reve" and fbcca is not None:
+        from .preprocess import VALID_CHANNEL_NAMES as _ALL_NAMES
+        fbcca_channel_indices = resolve_channel_indices(_ALL_NAMES, OCCIPITAL_CHANNELS)
+        print(f"FBCCA channel selection: {len(fbcca_channel_indices)} occipital channels")
+
     # --- Assemble ---
     encoder = FiLMHybridEncoder(
         backbone=backbone,
@@ -217,6 +262,8 @@ def build_film_encoder(
         llm_dim=llm_dim,
         backbone_dim=backbone_dim,
         dropout=dropout,
+        backbone_channel_indices=channel_indices if encoder_type == "reve" else None,
+        fbcca_channel_indices=fbcca_channel_indices,
     )
 
     total = sum(p.numel() for p in encoder.parameters())

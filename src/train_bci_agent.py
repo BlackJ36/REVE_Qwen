@@ -168,6 +168,8 @@ def run_stage1_training(
     lora_alpha=32,
     # Fine-tuned REVE
     reve_finetune_dir=None,
+    # Channel selection
+    occipital_only=False,
     # DeepSpeed
     deepspeed_config="configs/ds_zero2.json",
 ):
@@ -204,6 +206,7 @@ def run_stage1_training(
         lora_rank=lora_rank,
         lora_alpha=lora_alpha,
         reve_finetune_dir=reve_finetune_dir,
+        occipital_only=occipital_only,
     )
 
     print("\nLoading datasets...")
@@ -362,6 +365,8 @@ def run_stage2_training(
     unfreeze_last_n=0,
     # Fine-tuned REVE
     reve_finetune_dir=None,
+    # Channel selection
+    occipital_only=False,
     # DeepSpeed
     deepspeed_config="configs/ds_zero2.json",
 ):
@@ -401,6 +406,7 @@ def run_stage2_training(
         window_size=effective_window_size,
         unfreeze_last_n=unfreeze_last_n,
         reve_finetune_dir=reve_finetune_dir,
+        occipital_only=occipital_only,
     )
 
     # Build word vocab for candidate mode

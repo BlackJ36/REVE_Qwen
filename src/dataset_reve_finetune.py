@@ -10,6 +10,7 @@ import torch
 from torch.utils.data import Dataset
 
 from .dataset_bci_agent import BETA_BAD_SUBJECTS
+from .fbcca import SSVEP_LATENCY_S
 
 
 class REVEFinetuneDataset(Dataset):
@@ -21,6 +22,7 @@ class REVEFinetuneDataset(Dataset):
         trial_duration_pts: number of timepoints per trial (default 600 = 3s @ 200Hz)
         exclude_subjects: set of subject IDs to exclude (e.g. BETA_BAD_SUBJECTS)
         use_etrca: whether to load eTRCA full scores for distillation
+        latency_skip: skip SSVEP transient response (default: True, 0.14s @ 200Hz)
     """
 
     def __init__(
@@ -30,6 +32,7 @@ class REVEFinetuneDataset(Dataset):
         trial_duration_pts=600,
         exclude_subjects=None,
         use_etrca=True,
+        latency_skip=True,
     ):
         eeg_dir = Path(eeg_dir)
         data = torch.load(eeg_dir / f"{split}_eeg.pt", weights_only=True)
@@ -45,7 +48,11 @@ class REVEFinetuneDataset(Dataset):
 
         self.eeg_data = data["eeg_data"]    # (N, 62, T)
         self.labels = data["labels"]         # (N,)
-        self.trial_duration_pts = min(trial_duration_pts, self.eeg_data.shape[2])
+
+        # Skip SSVEP transient response (0.14s @ 200Hz = 28 pts)
+        self.latency_pts = int(SSVEP_LATENCY_S * 200) if latency_skip else 0
+        available = self.eeg_data.shape[2] - self.latency_pts
+        self.trial_duration_pts = min(trial_duration_pts, available)
 
         # Load eTRCA full scores for knowledge distillation
         self.etrca_scores = None
@@ -61,14 +68,16 @@ class REVEFinetuneDataset(Dataset):
             else:
                 print(f"  WARNING: {etrca_path} not found, training without distillation")
 
-        print(f"  {split}: {len(self)} trials, {self.trial_duration_pts}pts "
+        latency_str = f", latency_skip={self.latency_pts}pts" if self.latency_pts > 0 else ""
+        print(f"  {split}: {len(self)} trials, {self.trial_duration_pts}pts{latency_str} "
               f"({'with' if self.etrca_scores is not None else 'without'} eTRCA)")
 
     def __len__(self):
         return len(self.labels)
 
     def __getitem__(self, idx):
-        eeg = self.eeg_data[idx, :, :self.trial_duration_pts]  # (62, T)
+        t0 = self.latency_pts
+        eeg = self.eeg_data[idx, :, t0:t0 + self.trial_duration_pts]  # (62, T)
         label = self.labels[idx].long()
 
         sample = {"eeg": eeg, "label": label}
