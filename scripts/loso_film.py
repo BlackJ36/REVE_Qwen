@@ -346,14 +346,14 @@ def main():
     parser.add_argument("--random_offset", action="store_true", default=True)
     parser.add_argument("--no_random_offset", dest="random_offset", action="store_false")
 
-    # Training
-    parser.add_argument("--epochs", type=int, default=60)
+    # Training (defaults tuned for bs=512, sqrt-scaled from bs=128 baseline)
+    parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--patience", type=int, default=15)
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--num_workers", type=int, default=2)
-    parser.add_argument("--lr_reve", type=float, default=1e-5)
-    parser.add_argument("--lr_film", type=float, default=3e-4)
-    parser.add_argument("--lr_head", type=float, default=3e-4)
+    parser.add_argument("--lr_reve", type=float, default=2e-5)
+    parser.add_argument("--lr_film", type=float, default=6e-4)
+    parser.add_argument("--lr_head", type=float, default=6e-4)
 
     # Fold control
     parser.add_argument("--start_fold", type=int, default=None,
