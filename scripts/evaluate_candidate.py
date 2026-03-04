@@ -220,7 +220,7 @@ def run_evaluation(model, tokenizer, eeg_dir, device, exclude_bad=True, batch_si
             top3_idx = fbcca_indices[trial_idx, offset_idx].tolist()
             top3_sc = fbcca_scores[trial_idx, offset_idx].tolist()
 
-            input_ids, label_ids = dataset._build_sequence(
+            input_ids, label_ids, _ = dataset._build_sequence(
                 [label], [(top3_idx, top3_sc)]
             )
 
