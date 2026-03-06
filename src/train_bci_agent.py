@@ -168,6 +168,7 @@ def run_stage1_training(
     lora_alpha=32,
     # Fine-tuned REVE
     reve_finetune_dir=None,
+    reve_merged_ckpt=None,
     # Channel selection
     occipital_only=False,
     # DeepSpeed
@@ -193,7 +194,8 @@ def run_stage1_training(
 
     lora_str = f", lora_rank={lora_rank}" if lora_rank > 0 else ""
     ft_str = f", reve_ft={reve_finetune_dir}" if reve_finetune_dir else ""
-    print(f"\nBuilding model (Stage 1, encoder={encoder_type}, fbcca_mode={fbcca_mode}, unfreeze={unfreeze_last_n}{lora_str}{ft_str})...")
+    merged_str = f", reve_merged={reve_merged_ckpt}" if reve_merged_ckpt else ""
+    print(f"\nBuilding model (Stage 1, encoder={encoder_type}, fbcca_mode={fbcca_mode}, unfreeze={unfreeze_last_n}{lora_str}{ft_str}{merged_str})...")
     model, tokenizer = build_bci_agent_model(
         model_name=model_name,
         from_modelscope=from_modelscope,
@@ -206,6 +208,7 @@ def run_stage1_training(
         lora_rank=lora_rank,
         lora_alpha=lora_alpha,
         reve_finetune_dir=reve_finetune_dir,
+        reve_merged_ckpt=reve_merged_ckpt,
         occipital_only=occipital_only,
     )
 
@@ -365,6 +368,7 @@ def run_stage2_training(
     unfreeze_last_n=0,
     # Fine-tuned REVE
     reve_finetune_dir=None,
+    reve_merged_ckpt=None,
     # Channel selection
     occipital_only=False,
     # DeepSpeed
@@ -391,7 +395,8 @@ def run_stage2_training(
         print(f"  window_size clamped: {window_size} -> {effective_window_size} (trial={trial_duration_pts}pts)")
 
     ft_str = f", reve_ft={reve_finetune_dir}" if reve_finetune_dir else ""
-    print(f"\nBuilding model (Stage 2, encoder={encoder_type}, fbcca_mode={fbcca_mode}, unfreeze={unfreeze_last_n}{ft_str})...")
+    merged_str = f", reve_merged={reve_merged_ckpt}" if reve_merged_ckpt else ""
+    print(f"\nBuilding model (Stage 2, encoder={encoder_type}, fbcca_mode={fbcca_mode}, unfreeze={unfreeze_last_n}{ft_str}{merged_str})...")
     model, tokenizer = build_bci_agent_model(
         model_name=model_name,
         from_modelscope=from_modelscope,
@@ -406,6 +411,7 @@ def run_stage2_training(
         window_size=effective_window_size,
         unfreeze_last_n=unfreeze_last_n,
         reve_finetune_dir=reve_finetune_dir,
+        reve_merged_ckpt=reve_merged_ckpt,
         occipital_only=occipital_only,
     )
 

@@ -29,6 +29,9 @@ def parse_args():
     parser.add_argument("--reve_finetune_dir", type=str, default=None,
                         help="Directory with fine-tuned REVE LoRA + pooling (from finetune_reve.py). "
                              "Merges LoRA into base weights at load time (zero runtime overhead).")
+    parser.add_argument("--reve_merged_ckpt", type=str, default=None,
+                        help="Path to merged FiLMClassifier checkpoint (from LoRA merge). "
+                             "Loads SSVEP-tuned REVE weights, forces 9ch occipital.")
     parser.add_argument("--fbcca_mode", type=str, default=None,
                         choices=["film", "candidate", "none"],
                         help="FBCCA integration: 'film' (FiLM modulation), "
@@ -139,9 +142,9 @@ def main():
     trial_duration_pts = int(args.trial_duration * 200)
 
     # Auto-adjust num_eeg_tokens for occipital-only mode
-    if args.occipital_only and args.num_eeg_tokens == 62:
+    if (args.occipital_only or args.reve_merged_ckpt) and args.num_eeg_tokens == 62:
         args.num_eeg_tokens = 9
-        print(f"occipital_only: num_eeg_tokens auto-set to {args.num_eeg_tokens}")
+        print(f"occipital/merged: num_eeg_tokens auto-set to {args.num_eeg_tokens}")
 
     if args.stage == 1:
         batch_size = args.batch_size or 64
@@ -184,6 +187,7 @@ def main():
             lora_rank=args.s1_lora_rank,
             lora_alpha=args.s1_lora_alpha,
             reve_finetune_dir=args.reve_finetune_dir,
+            reve_merged_ckpt=args.reve_merged_ckpt,
             occipital_only=args.occipital_only,
             deepspeed_config=args.deepspeed,
         )
@@ -233,6 +237,7 @@ def main():
             early_stopping_patience=args.early_stopping_patience,
             unfreeze_last_n=args.unfreeze_last_n,
             reve_finetune_dir=args.reve_finetune_dir,
+            reve_merged_ckpt=args.reve_merged_ckpt,
             occipital_only=args.occipital_only,
             deepspeed_config=args.deepspeed,
         )

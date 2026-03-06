@@ -205,6 +205,8 @@ def build_bci_agent_model(
     unfreeze_last_n=0,
     # Fine-tuned REVE (from finetune_reve.py)
     reve_finetune_dir=None,
+    # Merged REVE checkpoint (from FiLM LoRA merge, 9ch)
+    reve_merged_ckpt=None,
     # Channel selection
     occipital_only=False,
 ):
@@ -364,6 +366,7 @@ def build_bci_agent_model(
         unfreeze_last_n=unfreeze_last_n,
         reve_finetune_dir=reve_finetune_dir,
         occipital_only=occipital_only,
+        reve_merged_ckpt=reve_merged_ckpt,
     )
 
     # --- Load Stage 1 encoder weights for Stage 2 ---

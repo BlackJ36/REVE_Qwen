@@ -139,6 +139,7 @@ def build_film_encoder(
     unfreeze_last_n=0,
     reve_finetune_dir=None,
     occipital_only=False,
+    reve_merged_ckpt=None,
 ):
     """Build a FiLMHybridEncoder with configurable backbone and FBCCA.
 
@@ -156,6 +157,9 @@ def build_film_encoder(
             Only applicable for encoder_type="reve".
         occipital_only: if True, use only 9 occipital channels for REVE (from 62ch input).
             Reduces noise for SSVEP but fewer tokens. Only for encoder_type="reve".
+        reve_merged_ckpt: path to merged FiLMClassifier checkpoint (from LoRA merge).
+            Loads REVE backbone weights (transformer + pooling) into the encoder.
+            Forces occipital_only=True since merged checkpoint is 9ch.
 
     Returns:
         FiLMHybridEncoder instance
@@ -168,6 +172,10 @@ def build_film_encoder(
 
         from .fbcca import OCCIPITAL_CHANNELS, resolve_channel_indices
         from .preprocess import VALID_CHANNEL_NAMES
+
+        # Merged checkpoint forces 9ch occipital
+        if reve_merged_ckpt is not None:
+            occipital_only = True
 
         reve_dir = Path(reve_dir)
         print(f"Loading REVE from {reve_dir}...")
@@ -194,8 +202,27 @@ def build_film_encoder(
         )
         backbone_dim = 512
 
+        # Load merged REVE weights (from FiLMClassifier LoRA merge)
+        if reve_merged_ckpt is not None:
+            import torch
+
+            print(f"Loading merged REVE from {reve_merged_ckpt}")
+            ckpt = torch.load(reve_merged_ckpt, map_location="cpu", weights_only=True)
+            # Extract REVE keys: "reve.reve.X" → "reve.X" for REVEWithUnfreeze
+            reve_state = {}
+            for k, v in ckpt.items():
+                if k.startswith("reve."):
+                    reve_state[k[len("reve."):]] = v
+            missing, unexpected = backbone.load_state_dict(reve_state, strict=False)
+            loaded = len(reve_state) - len(unexpected)
+            print(f"  Loaded {loaded} REVE tensors (skipped {len(unexpected)} unexpected)")
+            if missing:
+                print(f"  Missing: {missing}")
+            backbone.reve.requires_grad_(False)
+            print("  REVE re-frozen with merged weights")
+
         # Load and merge fine-tuned REVE LoRA (from finetune_reve.py)
-        if reve_finetune_dir is not None:
+        elif reve_finetune_dir is not None:
             import torch
 
             from peft import PeftModel as PeftModelClass
