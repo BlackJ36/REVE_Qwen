@@ -122,6 +122,13 @@ def parse_args():
 def main():
     args = parse_args()
 
+    # Pin each DeepSpeed rank to its own GPU BEFORE any CUDA operations
+    import torch
+    if args.local_rank >= 0:
+        torch.cuda.set_device(args.local_rank)
+        print(f"[rank {args.local_rank}] Using cuda:{args.local_rank} "
+              f"(free: {torch.cuda.mem_get_info(args.local_rank)[0]/1e9:.1f} GB)")
+
     # Resolve exclude list
     if args.exclude_bad_subjects:
         from src.dataset_bci_agent import BETA_BAD_SUBJECTS
