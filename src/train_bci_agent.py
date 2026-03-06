@@ -78,19 +78,43 @@ class BCIAgentTrainer(Trainer):
         return self.optimizer
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        import torch.nn.functional as F
+
         eeg_windows = inputs.pop("eeg_windows", None)
         window_counts = inputs.pop("window_counts", None)
         loss_weights = inputs.pop("loss_weights", None)
+        labels = inputs.pop("labels", None)
 
         outputs = model(
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
-            labels=inputs["labels"],
+            labels=None,  # compute loss here, not inside model
             eeg_windows=eeg_windows if eeg_windows is not None and eeg_windows.numel() > 0 else None,
             window_counts=window_counts,
-            loss_weights=loss_weights,
+            loss_weights=None,
         )
-        loss = outputs.loss
+
+        # Compute causal LM loss directly from logits
+        logits = outputs.logits
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+
+        if loss_weights is not None:
+            shift_weights = loss_weights[..., 1:].contiguous()
+            per_token = F.cross_entropy(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+                ignore_index=-100, reduction="none",
+            ).view(shift_labels.shape)
+            n_supervised = (shift_labels != -100).sum().clamp(min=1)
+            loss = (per_token * shift_weights).sum() / n_supervised
+        else:
+            loss = F.cross_entropy(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+                ignore_index=-100,
+            )
+
         return (loss, outputs) if return_outputs else loss
 
     def _save_checkpoint(self, model, trial):
