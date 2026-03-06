@@ -1,11 +1,12 @@
 #!/bin/bash
 # Stage 2: Instruction tuning with SSVEP-tuned REVE (9ch) + candidate mode
 # Loads encoder from Stage 1, applies LoRA to Qwen3-4B
-# 6x 48GB GPUs with DeepSpeed ZeRO-2
+# 5x RTX 4090 (48GB) with DeepSpeed ZeRO-2
 
 set -e
 
-NUM_GPUS=6
+export CUDA_VISIBLE_DEVICES=3,4,5,6,7
+NUM_GPUS=5
 S1_CHECKPOINT="output_bci_merged_s1/best"
 
 deepspeed --num_gpus $NUM_GPUS main_bci_agent.py \

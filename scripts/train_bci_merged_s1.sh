@@ -1,11 +1,12 @@
 #!/bin/bash
 # Stage 1: Alignment with SSVEP-tuned REVE (9ch, 1s) + candidate mode
 # REVE backbone frozen (merged LoRA), trains projector + embeddings
-# 6x 48GB GPUs with DeepSpeed ZeRO-2
+# 5x RTX 4090 (48GB) with DeepSpeed ZeRO-2
 
 set -e
 
-NUM_GPUS=6
+export CUDA_VISIBLE_DEVICES=3,4,5,6,7
+NUM_GPUS=5
 
 deepspeed --num_gpus $NUM_GPUS main_bci_agent.py \
     --stage 1 \
