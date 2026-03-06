@@ -73,35 +73,33 @@ class BCIAgentModel(nn.Module):
                 inputs_embeds[i, pad_positions[:n]] = sample_tokens[:n].to(inputs_embeds.dtype)
                 offset += K_i
 
-        if loss_weights is not None and labels is not None:
-            # Custom weighted loss: upweight EEG-only predictions
-            outputs = self.qwen(
-                inputs_embeds=inputs_embeds,
-                attention_mask=attention_mask,
-            )
-            logits = outputs.logits
+        # Always compute loss manually (Qwen3 may return loss=None with inputs_embeds)
+        outputs = self.qwen(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+        )
 
-            # Causal LM shift
+        if labels is not None:
+            logits = outputs.logits
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
-            shift_weights = loss_weights[..., 1:].contiguous()
 
-            loss_fn = nn.CrossEntropyLoss(ignore_index=-100, reduction="none")
-            per_token_loss = loss_fn(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1),
-            ).view(shift_labels.shape)
-
-            # Weighted sum, normalized by number of supervised tokens
-            weighted_loss = per_token_loss * shift_weights
-            n_supervised = (shift_labels != -100).sum().clamp(min=1)
-            outputs.loss = weighted_loss.sum() / n_supervised
-        else:
-            outputs = self.qwen(
-                inputs_embeds=inputs_embeds,
-                attention_mask=attention_mask,
-                labels=labels,
-            )
+            if loss_weights is not None:
+                shift_weights = loss_weights[..., 1:].contiguous()
+                loss_fn = nn.CrossEntropyLoss(ignore_index=-100, reduction="none")
+                per_token_loss = loss_fn(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1),
+                ).view(shift_labels.shape)
+                weighted_loss = per_token_loss * shift_weights
+                n_supervised = (shift_labels != -100).sum().clamp(min=1)
+                outputs.loss = weighted_loss.sum() / n_supervised
+            else:
+                loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
+                outputs.loss = loss_fn(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1),
+                )
 
         return outputs
 
