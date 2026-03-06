@@ -95,6 +95,25 @@ class REVEWithUnfreeze(nn.Module):
         print(f"REVE LoRA: rank={rank}, alpha={alpha}, {n_replaced} adapters on {target_modules}")
         print(f"  Trainable: {lora_params:,} / {total:,} ({100*lora_params/total:.1f}%)")
 
+    def merge_lora(self):
+        """Merge LoRA adapters back into base weights and replace with nn.Linear."""
+        layers = self._get_layers()
+        n_merged = 0
+        for layer in layers:
+            attn = layer[0]
+            for name in ("to_qkv", "to_out"):
+                module = getattr(attn, name, None)
+                if module is not None and isinstance(module, LoRALinear):
+                    W = module.original.weight.data
+                    merged = W + (module.lora_B.data @ module.lora_A.data) * module.scaling
+                    new_linear = nn.Linear(W.shape[1], W.shape[0], bias=module.original.bias is not None)
+                    new_linear.weight.data.copy_(merged)
+                    if module.original.bias is not None:
+                        new_linear.bias.data.copy_(module.original.bias.data)
+                    setattr(attn, name, new_linear)
+                    n_merged += 1
+        print(f"  Merged {n_merged} LoRA adapters into base weights")
+
     def _get_layers(self):
         """Discover transformer layers programmatically."""
         for path in ["transformer.layers", "layers", "encoder.layers"]:

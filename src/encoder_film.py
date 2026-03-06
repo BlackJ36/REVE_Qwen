@@ -202,24 +202,38 @@ def build_film_encoder(
         )
         backbone_dim = 512
 
-        # Load merged REVE weights (from FiLMClassifier LoRA merge)
+        # Load SSVEP-tuned REVE weights
         if reve_merged_ckpt is not None:
             import torch
 
-            print(f"Loading merged REVE from {reve_merged_ckpt}")
-            ckpt = torch.load(reve_merged_ckpt, map_location="cpu", weights_only=True)
-            # Extract REVE keys: "reve.reve.X" → "reve.X" for REVEWithUnfreeze
-            reve_state = {}
-            for k, v in ckpt.items():
-                if k.startswith("reve."):
-                    reve_state[k[len("reve."):]] = v
-            missing, unexpected = backbone.load_state_dict(reve_state, strict=False)
-            loaded = len(reve_state) - len(unexpected)
-            print(f"  Loaded {loaded} REVE tensors (skipped {len(unexpected)} unexpected)")
+            print(f"Loading SSVEP-tuned REVE from {reve_merged_ckpt}")
+            ckpt = torch.load(reve_merged_ckpt, map_location="cpu", weights_only=False)
+
+            if "lora_rank" in ckpt:
+                # Lightweight adapter format: inject LoRA → load weights → merge
+                rank, alpha = ckpt["lora_rank"], ckpt["lora_alpha"]
+                backbone.inject_lora(rank=rank, alpha=alpha)
+                # Load into internal REVE model (keys are relative to reve model)
+                state_dict = ckpt["state_dict"]
+                missing, unexpected = backbone.reve.load_state_dict(state_dict, strict=False)
+                loaded = len(state_dict) - len(unexpected)
+                print(f"  Loaded {loaded} adapter tensors (rank={rank}, alpha={alpha})")
+                # Merge LoRA into base weights (zero runtime overhead)
+                backbone.merge_lora()
+            else:
+                # Full merged checkpoint (from FiLMClassifier state dict)
+                reve_state = {}
+                for k, v in ckpt.items():
+                    if k.startswith("reve."):
+                        reve_state[k[len("reve."):]] = v
+                missing, unexpected = backbone.load_state_dict(reve_state, strict=False)
+                loaded = len(reve_state) - len(unexpected)
+                print(f"  Loaded {loaded} REVE tensors")
+
             if missing:
                 print(f"  Missing: {missing}")
             backbone.reve.requires_grad_(False)
-            print("  REVE re-frozen with merged weights")
+            print("  REVE re-frozen with SSVEP-tuned weights")
 
         # Load and merge fine-tuned REVE LoRA (from finetune_reve.py)
         elif reve_finetune_dir is not None:

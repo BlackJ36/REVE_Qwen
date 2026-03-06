@@ -17,6 +17,7 @@ data/Benchmark/
 data/BETA/
 *.mat
 *.pt
+!checkpoints/*.pt
 *.7z
 *.tar.gz
 
