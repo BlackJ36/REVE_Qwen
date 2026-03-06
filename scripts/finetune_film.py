@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
@@ -77,6 +78,7 @@ def build_param_groups(model, args):
       - Attention pooling (cls_query_token + ln): lr_film
     """
     reve_params = []
+    lora_params = []
     film_params = []
     head_params = []
     pooling_params = []
@@ -90,12 +92,16 @@ def build_param_groups(model, args):
             film_params.append(param)
         elif "cls_query_token" in name or ".ln." in name:
             pooling_params.append(param)
+        elif "lora_" in name:
+            lora_params.append(param)
         elif name.startswith("reve."):
             reve_params.append(param)
         else:
             head_params.append(param)
 
     groups = []
+    if lora_params:
+        groups.append({"params": lora_params, "lr": args.lr_lora, "name": "lora"})
     if reve_params:
         groups.append({"params": reve_params, "lr": args.lr_reve, "name": "reve"})
     if film_params:
@@ -153,8 +159,21 @@ def train(model, train_loader, val_loader, device, args):
             if etrca is not None:
                 etrca = etrca.to(device)
 
-            logits = model(eeg)
-            loss = model.compute_loss(logits, labels, etrca)
+            # Mixup augmentation
+            if args.mixup_alpha > 0:
+                lam = torch.distributions.Beta(args.mixup_alpha, args.mixup_alpha).sample().item()
+                idx = torch.randperm(eeg.size(0), device=device)
+                eeg = lam * eeg + (1 - lam) * eeg[idx]
+                logits = model(eeg)
+                loss = lam * F.cross_entropy(logits, labels, label_smoothing=model.label_smoothing) + \
+                       (1 - lam) * F.cross_entropy(logits, labels[idx], label_smoothing=model.label_smoothing)
+                # Add FiLM reg
+                if model.use_film and model.film_reg_weight > 0 and model._last_gamma is not None:
+                    reg = (model._last_gamma - 1).pow(2).mean() + model._last_beta.pow(2).mean()
+                    loss = loss + model.film_reg_weight * reg
+            else:
+                logits = model(eeg)
+                loss = model.compute_loss(logits, labels, etrca)
 
             optimizer.zero_grad()
             loss.backward()
@@ -255,6 +274,18 @@ def main():
                         help="FiLM amplitude constraint (0.1 = +/-10%%)")
     parser.add_argument("--film_reg_weight", type=float, default=0.01,
                         help="FiLM regularization weight")
+    parser.add_argument("--gamma_mode", type=str, default="tanh",
+                        choices=["tanh", "sigmoid"])
+    parser.add_argument("--token_gate", action="store_true", default=False)
+    parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument("--label_smoothing", type=float, default=0.0)
+    parser.add_argument("--lora_rank", type=int, default=0,
+                        help="LoRA rank for REVE (0=disabled, use unfreeze instead)")
+    parser.add_argument("--lora_alpha", type=int, default=16)
+    parser.add_argument("--lr_lora", type=float, default=1e-4,
+                        help="LR for LoRA adapters (higher than lr_reve)")
+    parser.add_argument("--backbone_channels", type=str, default=None,
+                        help="Comma-separated channel names for REVE (default: 9 occipital)")
 
     # Training
     parser.add_argument("--lr_reve", type=float, default=1e-5,
@@ -275,11 +306,15 @@ def main():
     # Augmentation
     parser.add_argument("--random_offset", action="store_true", default=False,
                         help="Random start offset within trial (train only)")
+    parser.add_argument("--mixup_alpha", type=float, default=0.0,
+                        help="Mixup alpha (0=disabled, 0.2-0.4 typical)")
 
     # Data quality
     parser.add_argument("--exclude_bad_subjects", action="store_true", default=True)
     parser.add_argument("--no_exclude", dest="exclude_bad_subjects", action="store_false")
 
+    parser.add_argument("--pretrained_ckpt", type=str, default=None,
+                        help="Load fine-tuned checkpoint before LoRA injection")
     parser.add_argument("--device", type=str, default="cuda")
 
     args = parser.parse_args()
@@ -320,6 +355,8 @@ def main():
 
     # Build model (use actual_pts for FBCCA template size)
     print("\nBuilding model...")
+    # If pretrained_ckpt + lora: build WITHOUT lora first, load ckpt, then inject
+    build_lora = args.lora_rank if not args.pretrained_ckpt else 0
     model = build_film_classifier(
         reve_dir=args.reve_dir,
         trial_pts=actual_pts,
@@ -329,7 +366,23 @@ def main():
         film_reg_weight=args.film_reg_weight,
         distill_alpha=args.distill_alpha,
         distill_temp=args.distill_temp,
+        gamma_mode=args.gamma_mode,
+        use_token_gate=args.token_gate,
+        dropout=args.dropout,
+        label_smoothing=args.label_smoothing,
+        backbone_channels=args.backbone_channels.split(",") if args.backbone_channels else None,
+        lora_rank=build_lora,
+        lora_alpha=args.lora_alpha,
     )
+    if args.pretrained_ckpt:
+        print(f"\nLoading pretrained checkpoint: {args.pretrained_ckpt}")
+        ckpt = torch.load(args.pretrained_ckpt, map_location="cpu", weights_only=True)
+        model.load_state_dict(ckpt, strict=False)
+        print(f"  Loaded {len(ckpt)} tensors")
+        if args.lora_rank > 0:
+            # Freeze everything, then inject LoRA on the fine-tuned weights
+            model.reve.reve.requires_grad_(False)
+            model.reve.inject_lora(rank=args.lora_rank, alpha=args.lora_alpha)
     model = model.to(device)
 
     best_acc = train(model, train_loader, val_loader, device, args)

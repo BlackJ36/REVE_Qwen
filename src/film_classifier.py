@@ -54,10 +54,17 @@ class FiLMClassifier(nn.Module):
         film_reg_weight=0.01,
         distill_alpha=0.5,
         distill_temp=2.0,
+        gamma_mode="tanh",
+        use_token_gate=False,
+        n_backbone_ch=9,
+        dropout=0.0,
+        label_smoothing=0.0,
     ):
         super().__init__()
         self.reve = reve_wrapper
         self.use_film = use_film and fbcca is not None
+        self.gamma_mode = gamma_mode
+        self.label_smoothing = label_smoothing
 
         if backbone_ch_idx is not None:
             self.register_buffer("backbone_ch_idx", torch.tensor(backbone_ch_idx, dtype=torch.long))
@@ -75,7 +82,7 @@ class FiLMClassifier(nn.Module):
             backbone_dim = 512
             self.film_scale = film_scale
 
-            # Constrained FiLM: LN → Linear → scale * tanh
+            # Constrained FiLM: LN → Linear → activation
             self.film_ln = nn.LayerNorm(fbcca_dim)
             self.film_gamma_proj = nn.Linear(fbcca_dim, backbone_dim)
             self.film_beta_proj = nn.Linear(fbcca_dim, backbone_dim)
@@ -86,6 +93,14 @@ class FiLMClassifier(nn.Module):
             nn.init.zeros_(self.film_beta_proj.weight)
             nn.init.zeros_(self.film_beta_proj.bias)
 
+            # Token gate: per-channel importance weight
+            self.use_token_gate = use_token_gate
+            if use_token_gate:
+                self.token_gate_proj = nn.Linear(fbcca_dim, n_backbone_ch)
+                nn.init.zeros_(self.token_gate_proj.weight)
+                nn.init.zeros_(self.token_gate_proj.bias)
+
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
         self.head = nn.Linear(512, n_classes)
 
         self.distill_alpha = distill_alpha
@@ -122,10 +137,19 @@ class FiLMClassifier(nn.Module):
                 fbcca_input = eeg
             fbcca_out = self.fbcca(fbcca_input)  # (B, 200)
 
-            # Constrained FiLM
+            # FiLM modulation
             h = self.film_ln(fbcca_out)
-            gamma = 1 + self.film_scale * torch.tanh(self.film_gamma_proj(h))  # (B, 512)
-            beta = self.film_scale * torch.tanh(self.film_beta_proj(h))  # (B, 512)
+            raw_gamma = self.film_gamma_proj(h)  # (B, 512)
+            raw_beta = self.film_beta_proj(h)    # (B, 512)
+
+            if self.gamma_mode == "sigmoid":
+                # gamma in [1-scale, 1+scale] via sigmoid
+                gamma = (1 - self.film_scale) + 2 * self.film_scale * torch.sigmoid(raw_gamma)
+                beta = self.film_scale * torch.tanh(raw_beta)
+            else:
+                # Default tanh: gamma in [1-scale, 1+scale]
+                gamma = 1 + self.film_scale * torch.tanh(raw_gamma)
+                beta = self.film_scale * torch.tanh(raw_beta)
 
             self._last_gamma = gamma
             self._last_beta = beta
@@ -133,17 +157,22 @@ class FiLMClassifier(nn.Module):
             # Modulate: broadcast over C and H dims
             modulated = gamma[:, None, None, :] * tokens_4d + beta[:, None, None, :]
 
+            # Token gate: per-channel importance weighting
+            if self.use_token_gate:
+                gate = torch.sigmoid(self.token_gate_proj(h))  # (B, n_ch)
+                modulated = gate[:, :, None, None] * modulated  # (B, C, H, E)
+
             # Pool using REVE's attention_pooling
             pooled = self.reve.reve.attention_pooling(modulated)  # (B, 512)
         else:
             # Baseline: direct REVE pooling
             pooled = self.reve(reve_input, pool=True)  # (B, 512)
 
-        return self.head(pooled)  # (B, 40)
+        return self.head(self.dropout(pooled))  # (B, 40)
 
     def compute_loss(self, logits, hard_labels, etrca_scores=None):
         """CE loss + optional eTRCA distillation + FiLM regularization."""
-        ce = F.cross_entropy(logits, hard_labels)
+        ce = F.cross_entropy(logits, hard_labels, label_smoothing=self.label_smoothing)
 
         loss = ce
         if etrca_scores is not None and self.distill_alpha < 1.0:
@@ -179,8 +208,15 @@ def build_film_classifier(
     film_reg_weight=0.01,
     distill_alpha=0.5,
     distill_temp=2.0,
+    gamma_mode="tanh",
+    use_token_gate=False,
+    dropout=0.0,
+    label_smoothing=0.0,
+    backbone_channels=None,
+    lora_rank=0,
+    lora_alpha=16,
 ):
-    """Build FiLMClassifier with REVE(9ch) backbone.
+    """Build FiLMClassifier with REVE backbone.
 
     Args:
         reve_dir: directory containing reve-base/ and reve-positions/
@@ -211,19 +247,24 @@ def build_film_classifier(
         str(reve_dir / "reve-base"), trust_remote_code=True,
     )
 
-    # 9 occipital channels for REVE backbone
-    backbone_ch_idx = resolve_channel_indices(VALID_CHANNEL_NAMES, OCCIPITAL_CHANNELS)
+    # Channel selection for REVE backbone
+    if backbone_channels is None:
+        backbone_channels = OCCIPITAL_CHANNELS
+    backbone_ch_idx = resolve_channel_indices(VALID_CHANNEL_NAMES, backbone_channels)
     reve_channel_names = [VALID_CHANNEL_NAMES[i] for i in backbone_ch_idx]
     print(f"REVE backbone: {len(reve_channel_names)} channels {reve_channel_names}")
 
     reve_wrapper = REVEWithUnfreeze(
         reve_model, pos_bank,
         channel_names=reve_channel_names,
-        unfreeze_last_n=unfreeze_last_n,
+        unfreeze_last_n=0 if lora_rank > 0 else unfreeze_last_n,
     )
+    if lora_rank > 0:
+        reve_wrapper.inject_lora(rank=lora_rank, alpha=lora_alpha)
 
-    # 9 occipital channels for FBCCA (same set)
-    fbcca_ch_idx = resolve_channel_indices(VALID_CHANNEL_NAMES, OCCIPITAL_CHANNELS)
+    # FBCCA channels: use same as backbone if specified, else default occipital
+    fbcca_channels = backbone_channels if backbone_channels is not None else OCCIPITAL_CHANNELS
+    fbcca_ch_idx = resolve_channel_indices(VALID_CHANNEL_NAMES, fbcca_channels)
 
     # Build FBCCA
     fbcca = None
@@ -242,11 +283,25 @@ def build_film_classifier(
         film_reg_weight=film_reg_weight,
         distill_alpha=distill_alpha,
         distill_temp=distill_temp,
+        gamma_mode=gamma_mode,
+        use_token_gate=use_token_gate,
+        n_backbone_ch=len(backbone_ch_idx),
+        dropout=dropout,
+        label_smoothing=label_smoothing,
     )
 
     total = sum(p.numel() for p in classifier.parameters())
     trainable = classifier.trainable_param_count
-    mode = f"FiLM(scale={film_scale})" if use_film else "baseline"
+    if use_film:
+        extras = []
+        if gamma_mode != "tanh":
+            extras.append(f"gamma={gamma_mode}")
+        if use_token_gate:
+            extras.append("token_gate")
+        extra_str = f", {', '.join(extras)}" if extras else ""
+        mode = f"FiLM(scale={film_scale}{extra_str})"
+    else:
+        mode = "baseline"
     unfreeze_str = f", unfreeze={unfreeze_last_n}" if unfreeze_last_n > 0 else ""
     print(f"\nFiLMClassifier ({mode}{unfreeze_str}): {total:,} total, {trainable:,} trainable")
 

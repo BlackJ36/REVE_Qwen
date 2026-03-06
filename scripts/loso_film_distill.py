@@ -1,17 +1,14 @@
-"""LOSO (Leave-One-Subject-Out) cross-validation for FiLM classifier.
+"""LOSO cross-validation for FiLM classifier with FBCCA 3s knowledge distillation.
 
-Trains one model per subject, using all other subjects for training.
-Aggregates per-subject accuracy for proper generalization metrics.
+Uses full-length FBCCA (e.g. 572pts) as teacher to guide 1s (200pts) student model.
+Teacher scores are pre-computed per fold; student trains with alpha*CE + (1-alpha)*KL loss.
 
 Usage:
   # Quick test: single fold
-  python scripts/loso_film.py --checkpoint_dir /data/zjj/loso_film --start_fold 1 --end_fold 1
+  python scripts/loso_film_distill.py --checkpoint_dir /data/zjj/loso_film_distill --start_fold 1 --end_fold 1
 
-  # Full run (95 subjects, ~95 * 15min on single GPU)
-  python scripts/loso_film.py --checkpoint_dir /data/zjj/loso_film
-
-  # Resume from fold 35
-  python scripts/loso_film.py --checkpoint_dir /data/zjj/loso_film --start_fold 35
+  # Full run
+  python scripts/loso_film_distill.py --checkpoint_dir /data/zjj/loso_film_distill
 """
 
 import argparse
@@ -44,7 +41,7 @@ def subject_label(sid):
 
 
 def train_one_fold(subject_id, args, device):
-    """Train and test one LOSO fold. Returns summary dict or None on error."""
+    """Train and test one LOSO fold with distillation. Returns summary dict or None."""
     fold_dir = Path(args.checkpoint_dir) / f"fold_{subject_id:03d}"
     summary_path = fold_dir / "summary.json"
 
@@ -58,7 +55,7 @@ def train_one_fold(subject_id, args, device):
 
     fold_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build datasets
+    # Build datasets - training set gets teacher FBCCA scores
     try:
         train_ds = LOSODataset(
             bm_dir=args.bm_dir, beta_dir=args.beta_dir,
@@ -66,6 +63,7 @@ def train_one_fold(subject_id, args, device):
             trial_duration_pts=args.trial_pts,
             exclude_subjects=BETA_BAD_REMAPPED,
             random_offset=args.random_offset,
+            teacher_fbcca_pts=args.teacher_pts,
         )
         test_ds = LOSODataset(
             bm_dir=args.bm_dir, beta_dir=args.beta_dir,
@@ -95,9 +93,8 @@ def train_one_fold(subject_id, args, device):
         use_film=args.use_film,
         unfreeze_last_n=args.unfreeze_last_n,
         film_scale=args.film_scale,
-        film_reg_weight=args.film_reg_weight,
-        gamma_mode=args.gamma_mode,
-        use_token_gate=args.token_gate,
+        distill_alpha=args.distill_alpha,
+        distill_temp=args.distill_temp,
     )
     model = model.to(device)
 
@@ -137,14 +134,18 @@ def train_one_fold(subject_id, args, device):
     best_epoch = 0
 
     for epoch in range(args.epochs):
-        # Train
+        # Train with distillation
         model.train()
         train_loss_sum, train_correct, train_total = 0.0, 0, 0
         for batch in train_loader:
             eeg = batch["eeg"].to(device)
             labels = batch["labels"].to(device)
+            teacher = batch.get("teacher_scores")
+            if teacher is not None:
+                teacher = teacher.to(device)
+
             logits = model(eeg)
-            loss = model.compute_loss(logits, labels)
+            loss = model.compute_loss(logits, labels, etrca_scores=teacher)
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(
@@ -158,7 +159,7 @@ def train_one_fold(subject_id, args, device):
         train_loss = train_loss_sum / train_total
         train_acc = train_correct / train_total
 
-        # Test on held-out subject
+        # Test on held-out subject (no distillation, pure CE)
         model.eval()
         total_loss, correct, top5_correct, total = 0.0, 0, 0, 0
         with torch.no_grad():
@@ -217,7 +218,6 @@ def train_one_fold(subject_id, args, device):
     logits = torch.cat(all_logits)
     top5_preds = logits.topk(5, dim=-1).indices
 
-    # Recompute metrics from final predictions
     final_acc = (preds == labels).float().mean().item()
     final_top5 = (top5_preds == labels.unsqueeze(1)).any(dim=1).float().mean().item()
 
@@ -242,6 +242,9 @@ def train_one_fold(subject_id, args, device):
         "n_trials": len(labels),
         "epochs": best_epoch,
         "trial_pts": actual_pts,
+        "teacher_pts": args.teacher_pts,
+        "distill_alpha": args.distill_alpha,
+        "distill_temp": args.distill_temp,
     }
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
@@ -305,9 +308,8 @@ def aggregate_results(checkpoint_dir, all_subjects):
     with open(agg_path, "w") as f:
         json.dump(agg, f, indent=2)
 
-    # Print summary table
     print(f"\n{'=' * 75}")
-    print(f"LOSO Results: {len(results)} subjects")
+    print(f"LOSO Distill Results: {len(results)} subjects")
     print(f"{'=' * 75}")
     print(f"{'Subject':<12} {'Dataset':<10} {'Acc':>7} {'Top5':>7} {'Trials':>7} {'Epochs':>7}")
     print(f"{'-' * 75}")
@@ -328,25 +330,30 @@ def aggregate_results(checkpoint_dir, all_subjects):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="LOSO cross-validation for FiLM classifier")
+    parser = argparse.ArgumentParser(description="LOSO with FBCCA knowledge distillation")
 
     # Paths
     parser.add_argument("--bm_dir", type=str, default="data/eeg_tensors_benchmark")
     parser.add_argument("--beta_dir", type=str, default="data/eeg_tensors_beta")
     parser.add_argument("--reve_dir", type=str, default="models")
-    parser.add_argument("--checkpoint_dir", type=str, default="/data/zjj/loso_film")
+    parser.add_argument("--checkpoint_dir", type=str, default="/data/zjj/loso_film_distill")
 
     # Trial config
-    parser.add_argument("--trial_pts", type=int, default=200, help="200=1s, 300=1.5s, 600=3s")
+    parser.add_argument("--trial_pts", type=int, default=200, help="Student: 200=1s")
     parser.add_argument("--unfreeze_last_n", type=int, default=4)
     parser.add_argument("--use_film", action="store_true", default=True)
     parser.add_argument("--no_film", dest="use_film", action="store_false")
     parser.add_argument("--film_scale", type=float, default=0.1)
-    parser.add_argument("--gamma_mode", type=str, default="tanh", choices=["tanh", "sigmoid"])
-    parser.add_argument("--token_gate", action="store_true", default=False)
-    parser.add_argument("--film_reg_weight", type=float, default=0.01)
     parser.add_argument("--random_offset", action="store_true", default=True)
     parser.add_argument("--no_random_offset", dest="random_offset", action="store_false")
+
+    # Distillation
+    parser.add_argument("--teacher_pts", type=int, default=572,
+                        help="Teacher FBCCA timepoints (572=max BM after latency skip)")
+    parser.add_argument("--distill_alpha", type=float, default=0.5,
+                        help="CE weight: 1.0=no distill, 0.0=pure KL")
+    parser.add_argument("--distill_temp", type=float, default=3.0,
+                        help="KD temperature (higher=softer targets)")
 
     # Training
     parser.add_argument("--epochs", type=int, default=120)
@@ -358,14 +365,11 @@ def main():
     parser.add_argument("--lr_head", type=float, default=3e-4)
 
     # Fold control
-    parser.add_argument("--start_fold", type=int, default=None,
-                        help="Start from this subject ID (for resume)")
-    parser.add_argument("--end_fold", type=int, default=None,
-                        help="End at this subject ID (inclusive)")
+    parser.add_argument("--start_fold", type=int, default=None)
+    parser.add_argument("--end_fold", type=int, default=None)
     parser.add_argument("--dataset", type=str, default="all",
                         choices=["all", "benchmark", "beta"])
-    parser.add_argument("--force", action="store_true", default=False,
-                        help="Re-run even if summary.json exists")
+    parser.add_argument("--force", action="store_true", default=False)
 
     parser.add_argument("--device", type=str, default="cuda")
 
@@ -377,13 +381,14 @@ def main():
         exclude_subjects=BETA_BAD_REMAPPED,
     )
 
-    # Filter by start/end fold
     if args.start_fold is not None:
         all_subjects = [s for s in all_subjects if s >= args.start_fold]
     if args.end_fold is not None:
         all_subjects = [s for s in all_subjects if s <= args.end_fold]
 
-    print(f"LOSO: {len(all_subjects)} folds, trial_pts={args.trial_pts}, "
+    print(f"LOSO Distill: {len(all_subjects)} folds, student={args.trial_pts}pts, "
+          f"teacher={args.teacher_pts}pts")
+    print(f"  alpha={args.distill_alpha}, temp={args.distill_temp}, "
           f"unfreeze={args.unfreeze_last_n}, film={args.use_film}")
     print(f"Output: {args.checkpoint_dir}")
 
@@ -406,7 +411,6 @@ def main():
     total_time = time.time() - t_start
     print(f"\nCompleted {completed}/{len(all_subjects)} folds in {total_time/60:.1f}min")
 
-    # Aggregate all results (including previously completed folds)
     all_subjects_full = LOSODataset.get_all_subjects(
         dataset_filter=args.dataset,
         exclude_subjects=BETA_BAD_REMAPPED,

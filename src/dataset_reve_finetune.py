@@ -139,6 +139,7 @@ class LOSODataset(Dataset):
         exclude_subjects=None,
         latency_skip=True,
         random_offset=False,
+        teacher_fbcca_pts=None,
     ):
         bm_dir, beta_dir = Path(bm_dir), Path(beta_dir)
         all_eeg, all_labels, all_sids, all_valid = [], [], [], []
@@ -217,6 +218,51 @@ class LOSODataset(Dataset):
         if self.random_offset:
             self.max_offsets = (self.valid_pts - self.latency_pts - self.trial_duration_pts).clamp(min=0)
 
+        # Pre-compute teacher FBCCA scores from longer signal for knowledge distillation
+        self.teacher_scores = None
+        if teacher_fbcca_pts is not None and teacher_fbcca_pts > self.trial_duration_pts:
+            self._precompute_teacher_fbcca(teacher_fbcca_pts)
+
+    def _precompute_teacher_fbcca(self, teacher_fbcca_pts):
+        """Pre-compute FBCCA scores using longer signal as distillation targets.
+
+        Groups trials by available duration to minimize FBCCA re-initialization.
+        """
+        from .fbcca import FBCCAFeatureExtractor, resolve_channel_indices
+        from .preprocess import VALID_CHANNEL_NAMES
+
+        # Resolve 9 occipital channel indices
+        ch_idx = resolve_channel_indices(VALID_CHANNEL_NAMES)
+
+        # Per-trial teacher duration: min(requested, available after latency skip)
+        teacher_pts = (self.valid_pts - self.latency_pts).clamp(min=self.trial_duration_pts)
+        teacher_pts = teacher_pts.clamp(max=teacher_fbcca_pts)
+
+        self.teacher_scores = torch.zeros(len(self.labels), 40)
+        unique_pts = teacher_pts.unique()
+
+        for pts in unique_pts:
+            pts_int = int(pts.item())
+            mask = teacher_pts == pts
+            n_trials = int(mask.sum())
+
+            fbcca = FBCCAFeatureExtractor(sfreq=200.0, n_timepoints=pts_int)
+            eeg_subset = self.eeg_data[mask][:, ch_idx, self.latency_pts:self.latency_pts + pts_int]
+
+            # Batch compute (CPU, no grad)
+            with torch.no_grad():
+                corr = fbcca(eeg_subset)  # (N, 200) = 5 bands × 40 freqs
+                corr_5x40 = corr.reshape(-1, 5, 40)
+                weights = fbcca.band_weights.unsqueeze(0).unsqueeze(-1)  # (1, 5, 1)
+                teacher_logits = (corr_5x40 * weights).sum(dim=1)  # (N, 40)
+
+            self.teacher_scores[mask] = teacher_logits
+
+        # Report teacher accuracy
+        teacher_preds = self.teacher_scores.argmax(dim=-1)
+        teacher_acc = (teacher_preds == self.labels).float().mean().item()
+        print(f"  Teacher FBCCA ({unique_pts.tolist()}pts): acc={teacher_acc:.1%} on {len(self.labels)} trials")
+
     def __len__(self):
         return len(self.labels)
 
@@ -227,11 +273,14 @@ class LOSODataset(Dataset):
             if max_off > 0:
                 t0 += torch.randint(0, max_off + 1, (1,)).item()
         eeg = self.eeg_data[idx, :, t0:t0 + self.trial_duration_pts]
-        return {
+        result = {
             "eeg": eeg,
             "label": self.labels[idx].long(),
             "subject_id": self.subject_ids[idx].long(),
         }
+        if self.teacher_scores is not None:
+            result["teacher_scores"] = self.teacher_scores[idx]
+        return result
 
     @staticmethod
     def get_all_subjects(dataset_filter="all", exclude_subjects=None):
@@ -260,4 +309,6 @@ def reve_finetune_collate_fn(batch):
     result = {"eeg": eeg, "labels": labels}
     if "etrca_scores" in batch[0]:
         result["etrca_scores"] = torch.stack([s["etrca_scores"] for s in batch])
+    if "teacher_scores" in batch[0]:
+        result["teacher_scores"] = torch.stack([s["teacher_scores"] for s in batch])
     return result

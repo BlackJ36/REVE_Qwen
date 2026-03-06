@@ -11,6 +11,22 @@ from .preprocess import VALID_CHANNEL_NAMES
 from .tokens import ALL_SPECIAL_TOKENS, BCI_PAD, register_special_tokens
 
 
+class LoRALinear(nn.Module):
+    """LoRA adapter wrapping a frozen Linear layer."""
+
+    def __init__(self, original: nn.Linear, rank=8, alpha=16):
+        super().__init__()
+        self.original = original
+        self.original.requires_grad_(False)
+        in_f, out_f = original.in_features, original.out_features
+        self.lora_A = nn.Parameter(torch.randn(rank, in_f) * (1.0 / rank))
+        self.lora_B = nn.Parameter(torch.zeros(out_f, rank))
+        self.scaling = alpha / rank
+
+    def forward(self, x):
+        return self.original(x) + (x @ self.lora_A.T @ self.lora_B.T) * self.scaling
+
+
 class REVEWithUnfreeze(nn.Module):
     """Wraps REVE model with selective layer unfreezing and position caching.
 
@@ -50,6 +66,35 @@ class REVEWithUnfreeze(nn.Module):
         print(f"REVE: {mode}")
         print(f"  Trainable: {unfrozen:,} / {total:,} ({100*unfrozen/total:.1f}%)")
 
+    def inject_lora(self, rank=8, alpha=16, target_modules=("to_qkv", "to_out")):
+        """Inject LoRA adapters into REVE transformer layers.
+
+        Freezes all REVE params, then adds trainable LoRA to specified modules.
+        Also unfreezes cls_query_token and ln for attention pooling.
+        """
+        self.reve.requires_grad_(False)
+        layers = self._get_layers()
+        n_replaced = 0
+        for layer in layers:
+            # layer is (Attention, FeedForward) pair
+            attn = layer[0]
+            for name in target_modules:
+                orig = getattr(attn, name, None)
+                if orig is not None and isinstance(orig, nn.Linear):
+                    setattr(attn, name, LoRALinear(orig, rank=rank, alpha=alpha))
+                    n_replaced += 1
+
+        # Unfreeze pooling components
+        if hasattr(self.reve, "cls_query_token"):
+            self.reve.cls_query_token.requires_grad_(True)
+        if hasattr(self.reve, "ln"):
+            self.reve.ln.requires_grad_(True)
+
+        lora_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in self.parameters())
+        print(f"REVE LoRA: rank={rank}, alpha={alpha}, {n_replaced} adapters on {target_modules}")
+        print(f"  Trainable: {lora_params:,} / {total:,} ({100*lora_params/total:.1f}%)")
+
     def _get_layers(self):
         """Discover transformer layers programmatically."""
         for path in ["transformer.layers", "layers", "encoder.layers"]:
@@ -69,12 +114,14 @@ class REVEWithUnfreeze(nn.Module):
     def forward(self, eeg_tensor, output_dtype=None, pool=True):
         """
         Args:
-            eeg_tensor: (B, 62, T) raw preprocessed EEG (T=600 for 3s, T=300 for 1.5s windows)
+            eeg_tensor: (B, C, T) raw preprocessed EEG (T=600 for 3s, T=300 for 1.5s windows)
             output_dtype: cast output to this dtype (e.g. bf16 for DeepSpeed training)
-            pool: if True return (B, 512) pooled; if False return (B, N, 512) all tokens
+            pool: True → (B, 512) pooled via attention_pooling
+                  False → (B, C*H, 512) flattened tokens
+                  "4d" → (B, C, H, 512) raw 4D tensor before pooling/flattening
         Returns:
-            (B, 512) if pool=True, (B, N, 512) if pool=False
-            N = 62 * patches (patches=3 for T=600, patches=1 for T=300)
+            Shape depends on pool parameter (see above).
+            C = n_channels, H = n_patches per channel.
         """
         B = eeg_tensor.shape[0]
         reve = self.reve
@@ -109,10 +156,12 @@ class REVEWithUnfreeze(nn.Module):
         x = rearrange(x, "b (c h) e -> b c h e", b=_b, c=c, h=h, e=reve.embed_dim)
         x = reve.final_layer(x)
 
-        if pool:
+        if pool == "4d":
+            out = x  # (B, C, H, 512) raw 4D for FiLM modulation before pooling
+        elif pool:
             out = reve.attention_pooling(x)  # (B, 512)
         else:
-            out = rearrange(x, "b c h e -> b (c h) e")  # (B, 186, 512)
+            out = rearrange(x, "b c h e -> b (c h) e")  # (B, N, 512)
 
         if output_dtype is not None:
             out = out.to(dtype=output_dtype)
