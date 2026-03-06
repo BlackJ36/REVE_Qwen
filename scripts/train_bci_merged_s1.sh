@@ -39,4 +39,4 @@ deepspeed --num_gpus $NUM_GPUS --master_port $MASTER_PORT main_bci_agent.py \
     --warmup_ratio 0.1 \
     --min_spells 5 \
     --max_spells 10 \
-    --deepspeed configs/ds_zero2.json
+    --deepspeed configs/ds_zero2_simple.json
