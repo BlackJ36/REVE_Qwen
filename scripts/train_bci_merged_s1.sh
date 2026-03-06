@@ -5,8 +5,6 @@
 
 set -e
 
-export CUDA_VISIBLE_DEVICES=3,4,5,6,7
-NUM_GPUS=5
 MASTER_PORT=29501
 
 # Cleanup stale processes
@@ -20,7 +18,9 @@ echo "GPU status:"
 nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv
 echo ""
 
-deepspeed --num_gpus $NUM_GPUS --master_port $MASTER_PORT main_bci_agent.py \
+# Use --include to explicitly select physical GPUs 3-7
+# (CUDA_VISIBLE_DEVICES may be ignored by DeepSpeed launcher)
+deepspeed --include localhost:3,4,5,6,7 --master_port $MASTER_PORT main_bci_agent.py \
     --stage 1 \
     --eeg_dir data/eeg_tensors \
     --output_dir output_bci_merged_s1 \
