@@ -113,7 +113,7 @@ def parse_args():
                         help="Use only 9 occipital channels for REVE (default: all 62)")
 
     # DeepSpeed
-    parser.add_argument("--deepspeed", type=str, default="configs/ds_zero2.json")
+    parser.add_argument("--deepspeed", type=str, default=None)
     parser.add_argument("--local_rank", type=int, default=-1)
 
     return parser.parse_args()
