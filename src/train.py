@@ -72,6 +72,40 @@ class BCITrainer(Trainer):
         output_dir = output_dir if output_dir is not None else self.args.output_dir
         self.model.save_pretrained(output_dir)
 
+    def _load_best_model(self):
+        """Load best checkpoint using our custom save format (projector.pt + LoRA adapter)."""
+        from pathlib import Path
+        from peft import PeftModel
+
+        best_path = self.state.best_model_checkpoint
+        if best_path is None:
+            return
+
+        print(f"Loading best model from {best_path}")
+
+        # Load projector
+        proj_path = Path(best_path) / "projector.pt"
+        if proj_path.exists():
+            self.model.projector.load_state_dict(
+                torch.load(proj_path, map_location="cpu", weights_only=True)
+            )
+
+        # Load LoRA adapter
+        if isinstance(self.model.qwen, PeftModel) and (Path(best_path) / "adapter_config.json").exists():
+            self.model.qwen.load_adapter(str(best_path), adapter_name="default", is_trainable=True)
+
+        # Load new token embeddings (S1 without modules_to_save)
+        qwen_path = Path(best_path) / "qwen_trainable.pt"
+        if qwen_path.exists():
+            ovs = self.model.original_vocab_size
+            qwen_state = torch.load(qwen_path, map_location="cpu", weights_only=True)
+            if "embed_tokens.new_rows" in qwen_state and ovs is not None:
+                self.model.qwen.get_input_embeddings().weight.data[ovs:] = qwen_state["embed_tokens.new_rows"]
+            if "lm_head.new_rows" in qwen_state and ovs is not None:
+                self.model.qwen.lm_head.weight.data[ovs:] = qwen_state["lm_head.new_rows"]
+
+        print(f"Best model loaded from {best_path}")
+
 
 def run_training(
     embedding_dir="data/embeddings",
