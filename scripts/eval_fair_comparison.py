@@ -401,6 +401,8 @@ def main():
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--fbcca_only", action="store_true",
                         help="Only run FBCCA baseline")
+    parser.add_argument("--model_only", action="store_true",
+                        help="Only run S2 model (skip FBCCA)")
     args = parser.parse_args()
 
     # Load data
@@ -412,31 +414,34 @@ def main():
     print("\nSelecting evaluation words...")
     eval_items = select_eval_words(corpus_words, trial_index, subjects, args.n_words)
 
+    fbcca_results, fbcca_metrics = None, None
+
     # ─── FBCCA ───────────────────────────────────────────────
-    print(f"\n{'='*60}")
-    print(f"FBCCA ({args.trial_pts}pts = {args.trial_pts/200:.1f}s)")
-    print("=" * 60)
-    ch_idx = resolve_channel_indices(VALID_CHANNEL_NAMES)
-    fbcca_results = run_fbcca(eeg_data, valid_pts, eval_items, args.trial_pts, ch_idx)
-    fbcca_metrics = compute_metrics(fbcca_results, label="fbcca_")
+    if not args.model_only:
+        print(f"\n{'='*60}")
+        print(f"FBCCA ({args.trial_pts}pts = {args.trial_pts/200:.1f}s)")
+        print("=" * 60)
+        ch_idx = resolve_channel_indices(VALID_CHANNEL_NAMES)
+        fbcca_results = run_fbcca(eeg_data, valid_pts, eval_items, args.trial_pts, ch_idx)
+        fbcca_metrics = compute_metrics(fbcca_results, label="fbcca_")
 
-    print(f"\n  Char Acc:  {fbcca_metrics['fbcca_char_acc']:.1%}")
-    print(f"  Word Acc:  {fbcca_metrics['fbcca_word_acc']:.1%}")
-    print(f"  Avg ED:    {fbcca_metrics['fbcca_avg_ed']:.2f}")
-    print(f"\n  Per-subject:")
-    for sid in subjects:
-        ck = f"fbcca_S{sid:02d}_char"
-        wk = f"fbcca_S{sid:02d}_word"
-        if ck in fbcca_metrics:
-            print(f"    S{sid:02d}: char={fbcca_metrics[ck]:.1%}  word={fbcca_metrics[wk]:.1%}")
+        print(f"\n  Char Acc:  {fbcca_metrics['fbcca_char_acc']:.1%}")
+        print(f"  Word Acc:  {fbcca_metrics['fbcca_word_acc']:.1%}")
+        print(f"  Avg ED:    {fbcca_metrics['fbcca_avg_ed']:.2f}")
+        print(f"\n  Per-subject:")
+        for sid in subjects:
+            ck = f"fbcca_S{sid:02d}_char"
+            wk = f"fbcca_S{sid:02d}_word"
+            if ck in fbcca_metrics:
+                print(f"    S{sid:02d}: char={fbcca_metrics[ck]:.1%}  word={fbcca_metrics[wk]:.1%}")
 
-    if args.fbcca_only:
-        if args.output:
-            Path(args.output).write_text(json.dumps(
-                {"fbcca": fbcca_metrics, "n_items": len(eval_items)},
-                indent=2, ensure_ascii=False))
-            print(f"\nSaved to {args.output}")
-        return
+        if args.fbcca_only:
+            if args.output:
+                Path(args.output).write_text(json.dumps(
+                    {"fbcca": fbcca_metrics, "n_items": len(eval_items)},
+                    indent=2, ensure_ascii=False))
+                print(f"\nSaved to {args.output}")
+            return
 
     # ─── S2 Model ────────────────────────────────────────────
     if args.s2_checkpoint is None:
@@ -468,47 +473,51 @@ def main():
         if ck in s2_metrics:
             print(f"    S{sid:02d}: char={s2_metrics[ck]:.1%}  word={s2_metrics[wk]:.1%}")
 
-    # ─── Correction analysis ─────────────────────────────────
-    print(f"\n{'='*60}")
-    print("Correction Analysis")
-    print("=" * 60)
-    corr = compute_correction_rate(fbcca_results, s2_results)
-    print(f"  Correction rate: {corr['correction_rate']:.1%} "
-          f"(FBCCA wrong: {corr['fbcca_wrong_count']})")
-    print(f"  Trust rate:      {corr['trust_rate']:.1%} "
-          f"(FBCCA right: {corr['fbcca_right_count']})")
+    # ─── Correction analysis (only if FBCCA also ran) ────────
+    if fbcca_results is not None:
+        print(f"\n{'='*60}")
+        print("Correction Analysis")
+        print("=" * 60)
+        corr = compute_correction_rate(fbcca_results, s2_results)
+        print(f"  Correction rate: {corr['correction_rate']:.1%} "
+              f"(FBCCA wrong: {corr['fbcca_wrong_count']})")
+        print(f"  Trust rate:      {corr['trust_rate']:.1%} "
+              f"(FBCCA right: {corr['fbcca_right_count']})")
 
-    # ─── Summary ─────────────────────────────────────────────
-    print(f"\n{'='*60}")
-    print("SUMMARY")
-    print("=" * 60)
-    print(f"  {'':20s} {'FBCCA':>10s} {'S2 Model':>10s} {'Delta':>10s}")
-    print(f"  {'─'*50}")
-    for m in ["char_acc", "word_acc", "avg_ed"]:
-        fb = fbcca_metrics.get(f"fbcca_{m}", 0)
-        s2 = s2_metrics.get(f"s2_{m}", 0)
-        d = s2 - fb
-        if "acc" in m:
-            print(f"  {m:20s} {fb:>9.1%} {s2:>9.1%} {d:>+9.1%}")
-        else:
-            print(f"  {m:20s} {fb:>10.2f} {s2:>10.2f} {d:>+10.2f}")
+        # Summary comparison
+        print(f"\n{'='*60}")
+        print("SUMMARY")
+        print("=" * 60)
+        print(f"  {'':20s} {'FBCCA':>10s} {'S2 Model':>10s} {'Delta':>10s}")
+        print(f"  {'─'*50}")
+        for m in ["char_acc", "word_acc", "avg_ed"]:
+            fb = fbcca_metrics.get(f"fbcca_{m}", 0)
+            s2 = s2_metrics.get(f"s2_{m}", 0)
+            d = s2 - fb
+            if "acc" in m:
+                print(f"  {m:20s} {fb:>9.1%} {s2:>9.1%} {d:>+9.1%}")
+            else:
+                print(f"  {m:20s} {fb:>10.2f} {s2:>10.2f} {d:>+10.2f}")
 
     # Examples
     print(f"\n{'='*60}")
     print("Examples (first 20)")
     print("=" * 60)
-    for fb, s2 in list(zip(fbcca_results, s2_results))[:20]:
-        t = fb["target"]
-        fp = fb["prediction"]
+    for s2 in s2_results[:20]:
+        t = s2["target"]
         sp = s2["prediction"]
-        print(f"  S{fb['subject']:02d} {t:>8s} | FBCCA: {fp:>8s} {'OK' if fp==t else 'XX'} "
-              f"| S2: {sp:>8s} {'OK' if sp==t else 'XX'}")
+        gen = s2.get("generated_text", "")[:60]
+        print(f"  S{s2['subject']:02d} {t:>8s} | pred: {sp:>8s} {'OK' if sp==t else 'XX'} | gen: {gen}")
 
     if args.output:
         output = {
-            "fbcca": fbcca_metrics, "s2": s2_metrics, "correction": corr,
+            "s2": s2_metrics,
             "config": vars(args), "n_items": len(eval_items),
         }
+        if fbcca_metrics:
+            output["fbcca"] = fbcca_metrics
+        if fbcca_results:
+            output["correction"] = compute_correction_rate(fbcca_results, s2_results)
         Path(args.output).write_text(json.dumps(output, indent=2, ensure_ascii=False))
         print(f"\nSaved to {args.output}")
 
