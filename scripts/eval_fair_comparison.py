@@ -220,8 +220,9 @@ def run_s2_model(model, tokenizer, eval_items, val_emb_path, device):
     bci_pad_id = tokenizer.convert_tokens_to_ids(BCI_PAD)
     im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
 
+    # Must match training system prompt exactly (generate_s2_dialogues.py:SYSTEM_SPELLING)
     system_text = ("你是一个脑机接口助手。用户通过注视屏幕上闪烁的字符来拼写文字。"
-                   "请根据脑电信号识别用户想要拼写的内容。")
+                   "每次收到一组脑电信号后，输出解码的字符序列。")
 
     results = []
     model.eval()
@@ -289,7 +290,10 @@ def run_s2_model(model, tokenizer, eval_items, val_emb_path, device):
             "generated_text": generated_text,
         })
 
-        if (item_idx + 1) % 50 == 0:
+        if item_idx < 5:
+            print(f"  [DEBUG {item_idx}] S{sid:02d} target={word} "
+                  f"gen='{generated_text[:80]}' pred={pred_word}")
+        elif (item_idx + 1) % 50 == 0:
             print(f"  [{item_idx+1}/{len(eval_items)}] S{sid:02d} "
                   f"target={word} pred={pred_word}")
 
