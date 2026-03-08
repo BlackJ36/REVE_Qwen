@@ -35,24 +35,74 @@ KEYBOARD_CHARS = [
 
 # ─── Edit distance ────────────────────────────────────────────
 
-def edit_distance(s1, s2):
-    """Levenshtein distance between two strings."""
+def edit_distance(s1, s2, bound=None):
+    """Levenshtein distance with optional diagonal band optimization.
+
+    Args:
+        bound: if set, only compute cells within ±bound of the diagonal.
+               Returns bound+1 if true distance exceeds bound.
+               Reduces complexity from O(m*n) to O(bound * min(m,n)).
+    """
     m, n = len(s1), len(s2)
-    dp = list(range(n + 1))
+    if bound is None:
+        # Standard full DP
+        dp = list(range(n + 1))
+        for i in range(1, m + 1):
+            prev, dp[0] = dp[0], i
+            for j in range(1, n + 1):
+                temp = dp[j]
+                if s1[i - 1] == s2[j - 1]:
+                    dp[j] = prev
+                else:
+                    dp[j] = 1 + min(prev, dp[j], dp[j - 1])
+                prev = temp
+        return dp[n]
+
+    # Bounded: diagonal band of width 2*bound+1
+    if abs(m - n) > bound:
+        return bound + 1
+
+    INF = bound + 1
+    dp = [INF] * (n + 1)
+    dp[0] = 0
+    for j in range(1, min(bound, n) + 1):
+        dp[j] = j
+
     for i in range(1, m + 1):
-        prev, dp[0] = dp[0], i
-        for j in range(1, n + 1):
-            temp = dp[j]
+        new_dp = [INF] * (n + 1)
+        j_lo = max(1, i - bound)
+        j_hi = min(n, i + bound)
+
+        if j_lo == 1:
+            new_dp[0] = i
+
+        for j in range(j_lo, j_hi + 1):
             if s1[i - 1] == s2[j - 1]:
-                dp[j] = prev
+                new_dp[j] = dp[j - 1]
             else:
-                dp[j] = 1 + min(prev, dp[j], dp[j - 1])
-            prev = temp
-    return dp[n]
+                candidates = INF
+                if dp[j] < candidates:       # delete
+                    candidates = dp[j]
+                if new_dp[j - 1] < candidates:  # insert
+                    candidates = new_dp[j - 1]
+                if dp[j - 1] < candidates:    # replace
+                    candidates = dp[j - 1]
+                new_dp[j] = 1 + candidates
+
+        dp = new_dp
+        # Early exit: if all cells in band exceed bound
+        if min(dp[j_lo:j_hi + 1]) > bound:
+            return INF
+
+    return dp[n] if dp[n] <= bound else INF
 
 
 def _ed_retrieval(pred_words, target_words, corpus_words):
-    """Find nearest corpus match by edit distance."""
+    """Find nearest corpus match by bounded edit distance.
+
+    Uses progressive bound tightening: as better matches are found,
+    the distance threshold shrinks, pruning more candidates early.
+    """
     valid = [(p, t) for p, t in zip(pred_words, target_words) if p]
     if not valid:
         return {"ed_top1": 0.0, "ed_top5": 0.0, "ed_avg_dist": 0.0}
@@ -60,21 +110,47 @@ def _ed_retrieval(pred_words, target_words, corpus_words):
     preds = [v[0] for v in valid]
     targets = [v[1] for v in valid]
 
+    # Pre-compute corpus word lengths for fast length-based filtering
+    corpus_lens = [len(w) for w in corpus_words]
+
     top1_correct, top5_correct = 0, 0
     target_dists = []
 
     for i, pred in enumerate(preds):
-        dists = [(edit_distance(pred, w), w) for w in corpus_words]
-        dists.sort(key=lambda x: x[0])
-        top5 = [w for _, w in dists[:5]]
+        pred_len = len(pred)
+        # Top-5 heap: (distance, word), keep 5 smallest
+        # Start with generous bound, tighten as we find matches
+        best5 = []  # sorted list of (dist, word), max 5
+        bound = max(pred_len, 10)  # initial bound
 
-        if dists[0][1] == targets[i]:
-            top1_correct += 1
-        if targets[i] in top5:
-            top5_correct += 1
+        for j, cw in enumerate(corpus_words):
+            # Length pre-filter: |len_diff| > bound means distance > bound
+            if abs(corpus_lens[j] - pred_len) > bound:
+                continue
+
+            d = edit_distance(pred, cw, bound=bound)
+            if d <= bound:
+                best5.append((d, cw))
+                best5.sort(key=lambda x: x[0])
+                if len(best5) > 5:
+                    best5.pop()
+                # Tighten bound to 5th-best distance
+                bound = best5[-1][0]
+
+        if best5:
+            if best5[0][1] == targets[i]:
+                top1_correct += 1
+            top5_set = {w for _, w in best5}
+            if targets[i] in top5_set:
+                top5_correct += 1
 
         # Distance to target
-        if targets[i] in corpus_words:
+        target_idx = None
+        for j, cw in enumerate(corpus_words):
+            if cw == targets[i]:
+                target_idx = j
+                break
+        if target_idx is not None:
             target_dists.append(edit_distance(pred, targets[i]))
 
     return {
@@ -310,3 +386,75 @@ def evaluate_from_files(
             print(f"  {k}: {v}")
 
     return metrics
+
+
+# ─── Training-time metrics (Trainer callback) ────────────────
+
+# Type markers from dataset_s2.py
+_TYPE_MARKERS = {-200: "a", -201: "c", -202: "d"}
+
+
+def build_s2_metrics_fn():
+    """Build (compute_metrics, preprocess_logits) for S2 Trainer.
+
+    Computes per-type token accuracy using type markers at labels position 0.
+    Type A/C supervised tokens are the BCI-relevant accuracy.
+
+    TensorBoard scalars:
+        eval_token_acc    - overall supervised token accuracy
+        eval_a_acc        - Type A token accuracy (correct spelling)
+        eval_c_acc        - Type C token accuracy (error correction)
+        eval_d_acc        - Type D token accuracy (NL dialogue)
+        eval_a_count      - number of Type A supervised tokens
+        eval_c_count      - number of Type C supervised tokens
+        eval_d_count      - number of Type D supervised tokens
+    """
+
+    def preprocess_logits_for_metrics(logits, labels):
+        if isinstance(logits, tuple):
+            logits = logits[0]
+        return logits.argmax(dim=-1)  # (B, L)
+
+    def compute_metrics(eval_pred):
+        preds, labels = eval_pred  # (B, L), (B, L)
+
+        # Extract type markers from position 0
+        type_markers = labels[:, 0].copy()  # (B,)
+
+        # Causal LM shift
+        preds = preds[:, :-1]
+        labels = labels[:, 1:]
+
+        B = labels.shape[0]
+        type_correct = {}
+        type_total = {}
+        all_correct, all_total = 0, 0
+
+        for b in range(B):
+            # Supervised positions: labels >= 0 (skip -100 padding and marker values)
+            mask = labels[b] >= 0
+            if mask.sum() == 0:
+                continue
+
+            correct = int((preds[b][mask] == labels[b][mask]).sum())
+            total = int(mask.sum())
+            all_correct += correct
+            all_total += total
+
+            # Per-type split
+            marker = int(type_markers[b])
+            tname = _TYPE_MARKERS.get(marker, "unk")
+            type_correct[tname] = type_correct.get(tname, 0) + correct
+            type_total[tname] = type_total.get(tname, 0) + total
+
+        metrics = {"token_acc": all_correct / max(all_total, 1)}
+
+        for tname in ["a", "c", "d"]:
+            total = type_total.get(tname, 0)
+            correct = type_correct.get(tname, 0)
+            metrics[f"{tname}_acc"] = correct / max(total, 1) if total > 0 else 0.0
+            metrics[f"{tname}_count"] = total
+
+        return metrics
+
+    return compute_metrics, preprocess_logits_for_metrics

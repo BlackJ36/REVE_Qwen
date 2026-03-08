@@ -6,7 +6,7 @@ matching label from the embedding bank.
 
 Sequence format (Type A/C):
   system: ...
-  user: <|bci_start|>[9 pads]<|bci_sep|>[9 pads]<|bci_sep|>...[9 pads]<|bci_end|>
+  user: <|bci_start|>[T pads]<|bci_sep|>[T pads]<|bci_sep|>...[T pads]<|bci_end|>
   assistant: WATER<|im_end|>
 
 Type D (pure NL): no EEG tokens, standard text dialogue.
@@ -21,7 +21,12 @@ from torch.utils.data import Dataset
 
 from .tokens import BCI_END, BCI_PAD, BCI_SEP, BCI_START
 
-N_EEG_TOKENS = 9  # channels per character
+N_EEG_TOKENS = 9  # default, overridden by embedding file metadata
+
+
+# Type markers encoded in labels for per-type metrics
+TYPE_MARKER = {"A": -200, "C": -201, "D": -202}
+MARKER_TO_TYPE = {v: k for k, v in TYPE_MARKER.items()}
 
 
 class BCIS2Dataset(Dataset):
@@ -47,8 +52,14 @@ class BCIS2Dataset(Dataset):
 
         # Load embedding bank and build label index
         emb_data = torch.load(embedding_path, map_location="cpu", weights_only=True)
-        self.emb_bank = emb_data["embeddings"]  # (N, 9, 512)
+        self.emb_bank = emb_data["embeddings"]  # (N, T, 512)
         emb_labels = emb_data["labels"]  # (N,)
+
+        # Auto-detect n_eeg_tokens from file metadata or embedding shape
+        if "n_eeg_tokens" in emb_data:
+            self.n_eeg_tokens = int(emb_data["n_eeg_tokens"])
+        else:
+            self.n_eeg_tokens = self.emb_bank.shape[1]  # backward compat
 
         self.label_to_indices = {l: [] for l in range(40)}
         for i, label in enumerate(emb_labels.tolist()):
@@ -56,7 +67,8 @@ class BCIS2Dataset(Dataset):
 
         counts = [len(v) for v in self.label_to_indices.values()]
         print(f"  Embedding bank: {self.emb_bank.shape[0]} trials, "
-              f"per-label: {min(counts)}-{max(counts)}")
+              f"per-label: {min(counts)}-{max(counts)}, "
+              f"n_eeg_tokens={self.n_eeg_tokens}")
 
         # Pre-tokenize fixed parts
         self._cache_tokens()
@@ -70,10 +82,10 @@ class BCIS2Dataset(Dataset):
         self.im_end_ids = self.tokenizer.encode("<|im_end|>", add_special_tokens=False)
 
     def _build_eeg_token_ids(self, n_chars):
-        """Build token IDs for EEG block: <|bci_start|>[9p]<|bci_sep|>...[9p]<|bci_end|>"""
+        """Build token IDs for EEG block: <|bci_start|>[Tp]<|bci_sep|>...[Tp]<|bci_end|>"""
         ids = list(self.bci_start_ids)
         for i in range(n_chars):
-            ids.extend(self.bci_pad_ids * N_EEG_TOKENS)
+            ids.extend(self.bci_pad_ids * self.n_eeg_tokens)
             if i < n_chars - 1:
                 ids.extend(self.bci_sep_ids)
         ids.extend(self.bci_end_ids)
@@ -152,8 +164,8 @@ class BCIS2Dataset(Dataset):
             for label in eeg_labels:
                 indices = self.label_to_indices[label]
                 idx = random.choice(indices)
-                embs.append(self.emb_bank[idx])  # (9, 512)
-            eeg_embeddings = torch.stack(embs)  # (n_chars, 9, 512)
+                embs.append(self.emb_bank[idx])  # (T, 512)
+            eeg_embeddings = torch.stack(embs)  # (n_chars, T, 512)
 
         return (
             torch.tensor(all_ids, dtype=torch.long),
@@ -169,11 +181,12 @@ class BCIS2Dataset(Dataset):
         input_ids, labels, eeg_embeddings = self._tokenize_dialogue(dialogue)
 
         result = {
+            "dialogue_type": dialogue.get("type", "A"),
             "input_ids": input_ids,
             "labels": labels,
         }
         if eeg_embeddings is not None:
-            result["eeg_embeddings"] = eeg_embeddings.float()  # (n_chars, 9, 512)
+            result["eeg_embeddings"] = eeg_embeddings.float()  # (n_chars, T, 512)
         return result
 
 
@@ -203,8 +216,12 @@ class BCIS2Collator:
             labels[i, offset:] = f["labels"]
             attention_mask[i, offset:] = 1
 
+            # Encode type marker at position 0 (always padding, safe to overwrite)
+            dtype = f.get("dialogue_type", "A")
+            labels[i, 0] = TYPE_MARKER.get(dtype, -200)
+
             if "eeg_embeddings" in f:
-                all_eeg.append(f["eeg_embeddings"])  # (n_chars_i, 9, 512)
+                all_eeg.append(f["eeg_embeddings"])  # (n_chars_i, T, 512)
                 eeg_char_counts.append(f["eeg_embeddings"].size(0))
             else:
                 eeg_char_counts.append(0)
@@ -217,7 +234,7 @@ class BCIS2Collator:
         }
 
         if all_eeg:
-            # (total_chars, 9, 512) — flatten across batch
+            # (total_chars, T, 512) — flatten across batch
             result["eeg_embeddings"] = torch.cat(all_eeg, dim=0)
 
         return result

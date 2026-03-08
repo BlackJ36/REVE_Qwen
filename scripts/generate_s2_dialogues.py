@@ -128,20 +128,77 @@ def word_to_labels(word):
     return labels
 
 
-def introduce_errors(labels, error_rate=0.15):
-    """Replace some labels with frequency-neighbor confusions.
+def sample_error_rate():
+    """Sample per-dialogue error rate simulating subject variability.
 
-    Returns (corrupted_labels, error_positions).
+    Distribution (roughly matching real BCI population):
+      30% strong subjects:  5-12% errors
+      40% average subjects: 12-25% errors
+      30% weak subjects:    25-40% errors
     """
-    corrupted = list(labels)
-    error_positions = []
-    for i in range(len(corrupted)):
+    tier = random.random()
+    if tier < 0.3:
+        return random.uniform(0.05, 0.12)
+    elif tier < 0.7:
+        return random.uniform(0.12, 0.25)
+    else:
+        return random.uniform(0.25, 0.40)
+
+
+# Error type weights: neighbor > drop > repeat > random
+ERROR_NEIGHBOR = 0.60   # SSVEP frequency confusion (most realistic)
+ERROR_DROP = 0.15       # character skipped (attention lapse)
+ERROR_REPEAT = 0.10     # character decoded twice (gaze lingering)
+ERROR_RANDOM = 0.15     # random substitution (noise/artifact)
+
+
+def introduce_errors(labels, error_rate=None):
+    """Introduce diverse BCI decoding errors.
+
+    Error types:
+      - neighbor:  replace with adjacent frequency on 5×8 grid (60%)
+      - drop:      skip character entirely (15%)
+      - repeat:    duplicate character (10%)
+      - random:    replace with any of 40 classes (15%)
+
+    Returns (corrupted_labels, error_count).
+    Note: corrupted may differ in length from labels (drops/repeats).
+    """
+    if error_rate is None:
+        error_rate = sample_error_rate()
+
+    corrupted = []
+    error_count = 0
+
+    for i, label in enumerate(labels):
         if random.random() < error_rate:
-            nbrs = CONFUSION_NEIGHBORS.get(corrupted[i], [])
-            if nbrs:
-                corrupted[i] = random.choice(nbrs)
-                error_positions.append(i)
-    return corrupted, error_positions
+            # Pick error type
+            r = random.random()
+            if r < ERROR_NEIGHBOR:
+                # Frequency neighbor confusion
+                nbrs = CONFUSION_NEIGHBORS.get(label, [])
+                if nbrs:
+                    corrupted.append(random.choice(nbrs))
+                else:
+                    corrupted.append(label)  # edge case: no neighbors
+            elif r < ERROR_NEIGHBOR + ERROR_DROP:
+                # Drop: skip this character entirely
+                pass  # don't append
+            elif r < ERROR_NEIGHBOR + ERROR_DROP + ERROR_REPEAT:
+                # Repeat: output this character twice
+                corrupted.append(label)
+                corrupted.append(label)
+            else:
+                # Random substitution: any class except correct
+                wrong = random.randrange(40)
+                while wrong == label:
+                    wrong = random.randrange(40)
+                corrupted.append(wrong)
+            error_count += 1
+        else:
+            corrupted.append(label)
+
+    return corrupted, error_count
 
 
 # ─── Dialogue generators ──────────────────────────────────────
@@ -161,20 +218,24 @@ def make_type_a(word, labels):
     }
 
 
-def make_type_c(word, labels, error_rate=0.15):
-    """Type C: auto-correction. EEG with errors → wrong + suggestion."""
-    corrupted, error_pos = introduce_errors(labels, error_rate)
+def make_type_c(word, labels, error_rate=None):
+    """Type C: auto-correction. EEG with errors → wrong + suggestion.
 
-    # Must have at least 1 error
-    if not error_pos:
-        # Force one error
+    Corrupted labels may differ in length from original (drops/repeats).
+    """
+    corrupted, error_count = introduce_errors(labels, error_rate)
+
+    # Must have at least 1 error and non-empty result
+    if error_count == 0 or len(corrupted) == 0:
+        # Force one neighbor error
+        corrupted = list(labels)
         pos = random.randrange(len(labels))
         nbrs = CONFUSION_NEIGHBORS.get(labels[pos], [])
         if nbrs:
             corrupted[pos] = random.choice(nbrs)
-            error_pos = [pos]
+            error_count = 1
         else:
-            return None  # rare edge case
+            return None
 
     wrong_word = "".join(KEYBOARD_CHARS[l] for l in corrupted)
     template = random.choice(CORRECTION_TEMPLATES)
@@ -187,9 +248,9 @@ def make_type_c(word, labels, error_rate=0.15):
             {"role": "user", "content": "__EEG__"},
             {"role": "assistant", "content": assistant_text},
         ],
-        "label_indices": labels,       # ground truth (for word)
-        "eeg_labels": corrupted,        # actual EEG labels (with errors)
-        "error_positions": error_pos,
+        "label_indices": labels,       # ground truth (intended word)
+        "eeg_labels": corrupted,        # actual EEG labels (with errors, may differ in length)
+        "error_count": error_count,
     }
 
 
@@ -261,8 +322,6 @@ def main():
                         help="Number of Type D (pure NL) dialogues")
     parser.add_argument("--val_ratio", type=float, default=0.2,
                         help="Fraction of data for validation (default: 0.2 = 2000 val)")
-    parser.add_argument("--error_rate", type=float, default=0.15,
-                        help="Per-character error rate for Type C")
     args = parser.parse_args()
 
     # Load corpus
@@ -292,7 +351,7 @@ def main():
     generated_c = 0
     while generated_c < args.n_type_c:
         word, labels = random.choice(valid_words)
-        d = make_type_c(word, labels, error_rate=args.error_rate)
+        d = make_type_c(word, labels)
         if d is not None:
             dialogues.append(d)
             generated_c += 1
@@ -316,14 +375,27 @@ def main():
     print_stats(train, "Train")
     print_stats(val, "Val")
 
+    # Error statistics for Type C
+    type_c = [d for d in dialogues if d["type"] == "C"]
+    if type_c:
+        len_diffs = [len(d["eeg_labels"]) - len(d["label_indices"]) for d in type_c]
+        err_counts = [d.get("error_count", 0) for d in type_c]
+        n_shorter = sum(1 for x in len_diffs if x < 0)  # drops
+        n_longer = sum(1 for x in len_diffs if x > 0)   # repeats
+        n_same = sum(1 for x in len_diffs if x == 0)     # substitution only
+        print(f"\n  Type C error stats:")
+        print(f"    Avg errors/word: {sum(err_counts)/len(err_counts):.1f}")
+        print(f"    Length: same={n_same}, shorter(drops)={n_shorter}, longer(repeats)={n_longer}")
+
     # Sample
     print("\nSamples:")
     for t in ["A", "C", "D"]:
-        samples = [d for d in val if d["type"] == t][:2]
+        samples = [d for d in val if d["type"] == t][:3]
         for s in samples:
             assistant = s["messages"][-1]["content"]
+            target = "".join(KEYBOARD_CHARS[l] for l in s["label_indices"]) if s["label_indices"] else ""
             eeg = "".join(KEYBOARD_CHARS[l] for l in s["eeg_labels"]) if s["eeg_labels"] else "(none)"
-            print(f"  [{t}] eeg={eeg} → {assistant[:70]}")
+            print(f"  [{t}] target={target} eeg={eeg} → {assistant[:70]}")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,8 @@
 """BCI-Qwen model: EEG projector + Qwen3-4B with LLaVA-style pad replacement.
 
-Pre-extracted REVE embeddings (9 channels × 512d) are projected to Qwen's
+Pre-extracted REVE embeddings (T tokens × 512d) are projected to Qwen's
 hidden dimension and injected at <|bci_pad|> positions.
+T depends on extraction config: 9 (200pts/1s) or 18 (400pts/2s).
 
 Two-stage training:
   Stage 1: Qwen frozen (except new token embeddings), train projector only
@@ -35,8 +36,8 @@ class EEGProjector(nn.Module):
 class BCIQwenModel(nn.Module):
     """EEG projector + Qwen3-4B with pad replacement.
 
-    Each sample has 9 <|bci_pad|> tokens in the input sequence. These are
-    replaced with projected REVE embeddings from 9 occipital channels.
+    Each sample has T <|bci_pad|> tokens in the input sequence. These are
+    replaced with projected REVE embeddings (T = n_eeg_tokens from extraction).
     """
 
     def __init__(self, qwen_model, tokenizer, projector, original_vocab_size=None):
@@ -57,8 +58,8 @@ class BCIQwenModel(nn.Module):
             input_ids: (B, L) token IDs with <|bci_pad|> placeholders
             attention_mask: (B, L)
             labels: (B, L) with -100 for non-target positions
-            eeg_embeddings: S1: (B, 9, 512) single trial per sample
-                           S2: (total_chars, 9, 512) flattened across batch
+            eeg_embeddings: S1: (B, T, 512) single trial per sample
+                           S2: (total_chars, T, 512) flattened across batch
             eeg_char_counts: S2 only: (B,) number of EEG characters per sample
         """
         embed_layer = self.qwen.get_input_embeddings()

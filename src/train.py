@@ -10,7 +10,9 @@ import torch
 from transformers import EarlyStoppingCallback, Trainer, TrainingArguments
 
 from .dataset import BCIDataCollator, BCIEEGDataset
+from .dataset_s2 import BCIS2Collator, BCIS2Dataset
 from .metrics_bci_agent import build_metrics_fn
+from .metrics_s2 import build_s2_metrics_fn
 from .model import build_model
 from .tokens import get_target_token_ids
 
@@ -55,11 +57,13 @@ class BCITrainer(Trainer):
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         eeg_embeddings = inputs.pop("eeg_embeddings", None)
+        eeg_char_counts = inputs.pop("eeg_char_counts", None)
         outputs = model(
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
             labels=inputs["labels"],
             eeg_embeddings=eeg_embeddings,
+            eeg_char_counts=eeg_char_counts,
         )
         loss = outputs.loss
         return (loss, outputs) if return_outputs else loss
@@ -76,6 +80,9 @@ def run_training(
     from_modelscope=True,
     stage=1,
     stage1_checkpoint=None,
+    # S2 data
+    s2_train_path=None,
+    s2_val_path=None,
     # LoRA
     lora_rank=16,
     lora_alpha=32,
@@ -91,7 +98,11 @@ def run_training(
     # DeepSpeed
     deepspeed_config=None,
 ):
-    """Main training entry point."""
+    """Main training entry point.
+
+    Stage 1: Single-trial classification (BCIEEGDataset)
+    Stage 2: Multi-char spelling + NL dialogues (BCIS2Dataset)
+    """
     embedding_dir = Path(embedding_dir)
 
     # Build model
@@ -109,13 +120,29 @@ def run_training(
 
     # Build datasets
     print("Loading datasets...")
-    train_dataset = BCIEEGDataset(embedding_dir, tokenizer, split="train")
-    val_dataset = BCIEEGDataset(embedding_dir, tokenizer, split="val")
-    collator = BCIDataCollator(tokenizer)
+    if stage == 2 and s2_train_path is not None:
+        # S2: dialogue data + embedding bank for label-indexed lookup
+        emb_path = str(embedding_dir / "train_embeddings.pt")
+        train_dataset = BCIS2Dataset(s2_train_path, emb_path, tokenizer, split="train")
+        val_dataset = BCIS2Dataset(s2_val_path, emb_path, tokenizer, split="val")
+        collator = BCIS2Collator(tokenizer)
+    else:
+        # S1: single-trial classification
+        train_dataset = BCIEEGDataset(embedding_dir, tokenizer, split="train")
+        val_dataset = BCIEEGDataset(embedding_dir, tokenizer, split="val")
+        collator = BCIDataCollator(tokenizer)
 
     # Build metrics
-    target_token_ids = get_target_token_ids(tokenizer)
-    compute_metrics, preprocess_logits = build_metrics_fn(target_token_ids)
+    if stage == 2 and s2_train_path is not None:
+        compute_metrics, preprocess_logits = build_s2_metrics_fn()
+    else:
+        target_token_ids = get_target_token_ids(tokenizer)
+        compute_metrics, preprocess_logits = build_metrics_fn(target_token_ids)
+
+    # Best model selection: S1 uses bci_acc (classification), S2 uses eval_loss (generation)
+    is_s2 = stage == 2 and s2_train_path is not None
+    best_metric = "eval_loss" if is_s2 else "eval_bci_acc"
+    best_greater = False if is_s2 else True
 
     # Training arguments
     training_args = TrainingArguments(
@@ -133,8 +160,8 @@ def run_training(
         save_strategy="epoch",
         save_total_limit=3,
         load_best_model_at_end=True,
-        metric_for_best_model="eval_bci_acc",
-        greater_is_better=True,
+        metric_for_best_model=best_metric,
+        greater_is_better=best_greater,
         report_to="tensorboard",
         logging_dir=f"{output_dir}/logs",
         dataloader_num_workers=4,

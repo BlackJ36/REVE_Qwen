@@ -1,12 +1,16 @@
 """BCI-EEG dataset for Qwen3 fine-tuning with pre-extracted REVE embeddings.
 
-Each trial has 9 occipital channel embeddings (9 × 512d), represented as
-9 <|bci_pad|> tokens in the chat template. At forward time, each pad position
-is replaced with its corresponding channel's REVE embedding via a projector.
+Each trial has N EEG token embeddings (N × 512d), represented as
+N <|bci_pad|> tokens in the chat template. At forward time, each pad position
+is replaced with its corresponding REVE embedding via a projector.
+
+N depends on extraction config:
+  200pts (1s): 9 channels × 1 patch = 9 tokens
+  400pts (2s): 9 channels × 2 patches = 18 tokens
 
 Sequence format:
   system: 你是一个脑机接口解码器。根据用户的EEG信号，输出对应的目标token。
-  user: <|bci_start|><|bci_pad|>×9<|bci_end|>
+  user: <|bci_start|><|bci_pad|>×N<|bci_end|>
   assistant: <|tXX|><|im_end|>
 """
 
@@ -19,31 +23,38 @@ from .tokens import BCI_END, BCI_PAD, BCI_START, TARGET_INDEX_TO_TOKEN
 
 SYSTEM_PROMPT = "你是一个脑机接口解码器。根据用户的EEG信号，输出对应的目标token。"
 
-# Number of EEG tokens = number of occipital channels
+# Default number of EEG tokens (overridden by embedding file metadata)
 N_EEG_TOKENS = 9
 
 
 class BCIEEGDataset(Dataset):
-    """Loads pre-extracted REVE embeddings (N, 9, 512) and creates training samples."""
+    """Loads pre-extracted REVE embeddings (N, T, 512) and creates training samples."""
 
-    def __init__(self, embedding_dir, tokenizer, split="train", n_eeg_tokens=N_EEG_TOKENS):
+    def __init__(self, embedding_dir, tokenizer, split="train", n_eeg_tokens=None):
         """
         Args:
             embedding_dir: path containing {split}_embeddings.pt
             tokenizer: Qwen tokenizer with BCI special tokens registered
             split: 'train' or 'val'
-            n_eeg_tokens: number of <|bci_pad|> tokens per sample (default: 9)
+            n_eeg_tokens: override pad token count (None = auto-detect from embedding file)
         """
         self.tokenizer = tokenizer
         self.embedding_dir = Path(embedding_dir)
-        self.n_eeg_tokens = n_eeg_tokens
 
         # Load pre-extracted embeddings
         data = torch.load(
             self.embedding_dir / f"{split}_embeddings.pt", weights_only=True
         )
-        self.embeddings = data["embeddings"]  # (N, 9, 512)
+        self.embeddings = data["embeddings"]  # (N, T, 512)
         self.labels = data["labels"]  # (N,) int, 0-39
+
+        # Auto-detect n_eeg_tokens from file metadata or embedding shape
+        if n_eeg_tokens is not None:
+            self.n_eeg_tokens = n_eeg_tokens
+        elif "n_eeg_tokens" in data:
+            self.n_eeg_tokens = int(data["n_eeg_tokens"])
+        else:
+            self.n_eeg_tokens = self.embeddings.shape[1]  # backward compat
 
         # Pre-build the chat template tokens
         self.bci_pad_id = tokenizer.convert_tokens_to_ids(BCI_PAD)
