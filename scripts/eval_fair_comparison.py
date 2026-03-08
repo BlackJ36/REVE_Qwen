@@ -283,14 +283,19 @@ def run_s2_model(model, tokenizer, eval_items, val_emb_path, device):
                 pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
             )
 
+        # When using inputs_embeds, generate() returns only new tokens
+        # (not prefixed with input). Detect this by comparing lengths.
+        if output_ids.shape[1] > input_ids.shape[1]:
+            new_tokens = output_ids[0][input_ids.shape[1]:]
+        else:
+            new_tokens = output_ids[0]
+
         if item_idx == 0:
             print(f"  [DEBUG] output_ids shape: {output_ids.shape}")
-            print(f"  [DEBUG] new_token_count: {output_ids.shape[1] - input_ids.shape[1]}")
-            raw_text = tokenizer.decode(output_ids[0][input_ids.shape[1]:],
-                                         skip_special_tokens=False)
-            print(f"  [DEBUG] raw output (with special): '{raw_text[:120]}'")
+            print(f"  [DEBUG] new_tokens count: {len(new_tokens)}")
+            raw_text = tokenizer.decode(new_tokens, skip_special_tokens=False)
+            print(f"  [DEBUG] raw output: '{raw_text[:120]}'")
 
-        new_tokens = output_ids[0][input_ids.shape[1]:]
         generated_text = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
         # Extract predicted word (first uppercase block)
