@@ -156,9 +156,12 @@ def run_training(
     print("Loading datasets...")
     if stage == 2 and s2_train_path is not None:
         # S2: dialogue data + embedding bank for label-indexed lookup
-        emb_path = str(embedding_dir / "train_embeddings.pt")
-        train_dataset = BCIS2Dataset(s2_train_path, emb_path, tokenizer, split="train")
-        val_dataset = BCIS2Dataset(s2_val_path, emb_path, tokenizer, split="val")
+        # Train uses train subjects' embeddings, val uses val subjects'
+        # for honest cross-subject evaluation
+        train_emb_path = str(embedding_dir / "train_embeddings.pt")
+        val_emb_path = str(embedding_dir / "val_embeddings.pt")
+        train_dataset = BCIS2Dataset(s2_train_path, train_emb_path, tokenizer, split="train")
+        val_dataset = BCIS2Dataset(s2_val_path, val_emb_path, tokenizer, split="val")
         collator = BCIS2Collator(tokenizer)
     else:
         # S1: single-trial classification
