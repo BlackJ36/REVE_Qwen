@@ -94,21 +94,12 @@ class BCIQwenModel(nn.Module):
                     n = min(len(pad_positions), projected.size(1))
                     inputs_embeds[i, pad_positions[:n]] = projected[i, :n].to(inputs_embeds.dtype)
 
-        # Compute loss manually (Qwen may return loss=None with inputs_embeds)
+        # Pass labels to Qwen so it computes loss internally (DDP-safe)
         outputs = self.qwen(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
+            labels=labels,
         )
-
-        if labels is not None:
-            logits = outputs.logits
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
-            outputs.loss = loss_fn(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1),
-            )
 
         return outputs
 
