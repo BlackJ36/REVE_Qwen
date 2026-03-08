@@ -1,9 +1,17 @@
-"""BCI-EEG dataset for Qwen3-VL fine-tuning."""
+"""BCI-EEG dataset for Qwen3 fine-tuning with pre-extracted REVE embeddings.
 
-import json
+Each trial has 9 occipital channel embeddings (9 × 512d), represented as
+9 <|bci_pad|> tokens in the chat template. At forward time, each pad position
+is replaced with its corresponding channel's REVE embedding via a projector.
+
+Sequence format:
+  system: 你是一个脑机接口解码器。根据用户的EEG信号，输出对应的目标token。
+  user: <|bci_start|><|bci_pad|>×9<|bci_end|>
+  assistant: <|tXX|><|im_end|>
+"""
+
 from pathlib import Path
 
-import numpy as np
 import torch
 from torch.utils.data import Dataset
 
@@ -11,46 +19,50 @@ from .tokens import BCI_END, BCI_PAD, BCI_START, TARGET_INDEX_TO_TOKEN
 
 SYSTEM_PROMPT = "你是一个脑机接口解码器。根据用户的EEG信号，输出对应的目标token。"
 
+# Number of EEG tokens = number of occipital channels
+N_EEG_TOKENS = 9
+
 
 class BCIEEGDataset(Dataset):
-    """Loads pre-extracted REVE embeddings and creates training samples."""
+    """Loads pre-extracted REVE embeddings (N, 9, 512) and creates training samples."""
 
-    def __init__(self, embedding_dir, tokenizer, split="train"):
+    def __init__(self, embedding_dir, tokenizer, split="train", n_eeg_tokens=N_EEG_TOKENS):
         """
         Args:
-            embedding_dir: path containing {split}_embeddings.pt and {split}_labels.pt
+            embedding_dir: path containing {split}_embeddings.pt
             tokenizer: Qwen tokenizer with BCI special tokens registered
             split: 'train' or 'val'
+            n_eeg_tokens: number of <|bci_pad|> tokens per sample (default: 9)
         """
         self.tokenizer = tokenizer
         self.embedding_dir = Path(embedding_dir)
+        self.n_eeg_tokens = n_eeg_tokens
 
         # Load pre-extracted embeddings
         data = torch.load(
             self.embedding_dir / f"{split}_embeddings.pt", weights_only=True
         )
-        self.embeddings = data["embeddings"]  # (N, reve_dim)
+        self.embeddings = data["embeddings"]  # (N, 9, 512)
         self.labels = data["labels"]  # (N,) int, 0-39
 
         # Pre-build the chat template tokens
         self.bci_pad_id = tokenizer.convert_tokens_to_ids(BCI_PAD)
         self._build_template()
 
-        print(f"[{split}] Loaded {len(self)} samples, embedding dim={self.embeddings.shape[-1]}")
+        print(f"[{split}] Loaded {len(self)} samples, "
+              f"embedding shape={list(self.embeddings.shape)}")
 
     def _build_template(self):
         """Pre-tokenize the fixed parts of the chat template."""
-        # Build the input text (without the target token)
+        # 9 pads between BCI_START and BCI_END
+        pads = BCI_PAD * self.n_eeg_tokens
         chat_prefix = (
             f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
-            f"<|im_start|>user\n{BCI_START}{BCI_PAD}{BCI_END}<|im_end|>\n"
+            f"<|im_start|>user\n{BCI_START}{pads}{BCI_END}<|im_end|>\n"
             f"<|im_start|>assistant\n"
         )
         self.prefix_ids = self.tokenizer.encode(chat_prefix, add_special_tokens=False)
-        self.suffix_text = "<|im_end|>"
-        self.suffix_ids = self.tokenizer.encode(
-            self.suffix_text, add_special_tokens=False
-        )
+        self.suffix_ids = self.tokenizer.encode("<|im_end|>", add_special_tokens=False)
 
         # Pre-compute all 40 target sequences (avoid tokenizing in __getitem__)
         self.target_sequences = {}
@@ -67,10 +79,9 @@ class BCIEEGDataset(Dataset):
         return len(self.labels)
 
     def __getitem__(self, idx):
-        eeg_emb = self.embeddings[idx]  # (reve_dim,)
+        eeg_emb = self.embeddings[idx]  # (9, 512)
         target_idx = int(self.labels[idx])
 
-        # Use pre-computed sequences (no tokenization overhead)
         seq = self.target_sequences[target_idx]
 
         return {
@@ -81,7 +92,7 @@ class BCIEEGDataset(Dataset):
 
 
 class BCIDataCollator:
-    """Pads batch and handles EEG embeddings."""
+    """Pads batch and stacks EEG embeddings."""
 
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
@@ -94,7 +105,7 @@ class BCIDataCollator:
         input_ids = torch.full((batch_size, max_len), self.pad_id, dtype=torch.long)
         labels = torch.full((batch_size, max_len), -100, dtype=torch.long)
         attention_mask = torch.zeros(batch_size, max_len, dtype=torch.long)
-        eeg_embeddings = torch.stack([f["eeg_embeddings"] for f in features])
+        eeg_embeddings = torch.stack([f["eeg_embeddings"] for f in features])  # (B, 9, 512)
 
         for i, f in enumerate(features):
             seq_len = f["input_ids"].size(0)

@@ -31,11 +31,11 @@ deepspeed --include localhost:3,4,5,6,7 --master_port $MASTER_PORT main_bci_agen
     --decoder_type fbcca \
     --window_size 200 \
     --trial_duration 1.0 \
-    --batch_size 64 \
+    --batch_size 8 \
     --grad_accum 2 \
     --lr 5e-4 \
     --encoder_lr 1e-3 \
-    --epochs 10 \
+    --epochs 30 \
     --warmup_ratio 0.1 \
     --min_spells 5 \
     --max_spells 10 \
