@@ -265,6 +265,13 @@ def run_s2_model(model, tokenizer, eval_items, val_emb_path, device):
         n = min(len(pad_positions), flat_tokens.size(0))
         inputs_embeds[0, pad_positions[:n]] = flat_tokens[:n].to(inputs_embeds.dtype)
 
+        if item_idx == 0:
+            print(f"  [DEBUG] input_ids shape: {input_ids.shape}")
+            print(f"  [DEBUG] n_pad_positions: {(input_ids[0] == bci_pad_id).sum().item()}")
+            print(f"  [DEBUG] expected pads: {n_chars * n_eeg_tokens}")
+            print(f"  [DEBUG] bci_pad_id: {bci_pad_id}")
+            print(f"  [DEBUG] inputs_embeds dtype: {inputs_embeds.dtype}")
+
         # Generate
         with torch.no_grad():
             output_ids = model.qwen.generate(
@@ -275,6 +282,13 @@ def run_s2_model(model, tokenizer, eval_items, val_emb_path, device):
                 eos_token_id=im_end_id,
                 pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
             )
+
+        if item_idx == 0:
+            print(f"  [DEBUG] output_ids shape: {output_ids.shape}")
+            print(f"  [DEBUG] new_token_count: {output_ids.shape[1] - input_ids.shape[1]}")
+            raw_text = tokenizer.decode(output_ids[0][input_ids.shape[1]:],
+                                         skip_special_tokens=False)
+            print(f"  [DEBUG] raw output (with special): '{raw_text[:120]}'")
 
         new_tokens = output_ids[0][input_ids.shape[1]:]
         generated_text = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
