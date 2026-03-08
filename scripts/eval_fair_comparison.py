@@ -145,28 +145,59 @@ def run_fbcca(eeg_data, valid_pts_all, eval_items, trial_pts, ch_idx):
 # ─── S2 model evaluation ────────────────────────────────────
 
 def load_s2_model(checkpoint_dir, model_name, from_modelscope):
-    """Load trained S2 model for inference."""
-    from src.model import build_model
+    """Load trained S2 model directly from checkpoint (no double-LoRA).
 
-    model, tokenizer = build_model(
-        model_name=model_name,
-        from_modelscope=from_modelscope,
-        reve_dim=512,
-        stage=2,
-        stage1_checkpoint=checkpoint_dir,
-        lora_rank=16,
-        lora_alpha=32,
+    S2 checkpoint contains: adapter_config.json + adapter_model.safetensors
+    (LoRA + modules_to_save for embed_tokens/lm_head) + projector.pt.
+    We load base Qwen → apply S2 adapter → load projector.
+    """
+    from peft import PeftModel as PeftModelClass
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    from src.model import BCIQwenModel, EEGProjector, _get_llm_dim
+    from src.tokens import register_special_tokens
+
+    ckpt_dir = Path(checkpoint_dir)
+
+    # Load base Qwen
+    if from_modelscope:
+        from modelscope import snapshot_download
+        model_path = snapshot_download(model_name)
+    else:
+        model_path = model_name
+
+    print(f"Loading base model {model_name}...")
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path, trust_remote_code=True, padding_side="left",
     )
+    num_new = register_special_tokens(tokenizer)
+
+    qwen_model = AutoModelForCausalLM.from_pretrained(
+        model_path, torch_dtype=torch.bfloat16,
+        trust_remote_code=True, low_cpu_mem_usage=True,
+    )
+    qwen_model.resize_token_embeddings(len(tokenizer))
+
+    llm_dim = _get_llm_dim(qwen_model)
+    original_vocab_size = len(tokenizer) - num_new
+
+    # Load S2 LoRA adapter (includes modules_to_save for embed_tokens/lm_head)
+    if (ckpt_dir / "adapter_config.json").exists():
+        print(f"Loading S2 adapter from {ckpt_dir}")
+        qwen_model = PeftModelClass.from_pretrained(
+            qwen_model, str(ckpt_dir), is_trainable=False,
+        )
 
     # Load projector
-    ckpt_dir = Path(checkpoint_dir)
+    projector = EEGProjector(reve_dim=512, qwen_dim=llm_dim)
     proj_path = ckpt_dir / "projector.pt"
     if proj_path.exists():
-        model.projector.load_state_dict(
+        projector.load_state_dict(
             torch.load(proj_path, map_location="cpu", weights_only=True)
         )
         print(f"Loaded projector from {proj_path}")
 
+    model = BCIQwenModel(qwen_model, tokenizer, projector, original_vocab_size)
     model.requires_grad_(False)
     return model, tokenizer
 
