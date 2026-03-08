@@ -9,15 +9,17 @@
 
 set -e
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-3}"
-echo "Using GPU: CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-3,4,5,6,7}"
+N_GPU=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
+echo "Using $N_GPU GPUs: CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 
 S1_CKPT="${1:-output/s1/final}"
 OUTPUT_DIR="output/s2"
 
 echo "Loading S1 checkpoint from: $S1_CKPT"
 
-uv run python main.py \
+# DDP via torchrun: per_device_batch=4 × 5 GPUs × grad_accum=4 = effective batch 80
+uv run torchrun --nproc_per_node=$N_GPU main.py \
     --stage 2 \
     --stage1_checkpoint "$S1_CKPT" \
     --embedding_dir data/embeddings \

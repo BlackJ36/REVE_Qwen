@@ -8,12 +8,14 @@
 
 set -e
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-3}"
-echo "Using GPU: CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-3,4,5,6,7}"
+N_GPU=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
+echo "Using $N_GPU GPUs: CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 
 OUTPUT_DIR="output/s1"
 
-uv run python main.py \
+# DDP via torchrun: per_device_batch=16 × 5 GPUs = effective batch 80
+uv run torchrun --nproc_per_node=$N_GPU main.py \
     --stage 1 \
     --embedding_dir data/embeddings \
     --output_dir "$OUTPUT_DIR" \
