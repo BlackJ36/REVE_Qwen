@@ -9,6 +9,9 @@
 
 set -e
 
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-3}"
+echo "Using GPU: CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+
 S1_CKPT="${1:-output/s1/final}"
 OUTPUT_DIR="output/s2"
 

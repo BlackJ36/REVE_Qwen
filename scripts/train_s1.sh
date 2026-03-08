@@ -8,6 +8,9 @@
 
 set -e
 
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-3}"
+echo "Using GPU: CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+
 OUTPUT_DIR="output/s1"
 
 uv run python main.py \
