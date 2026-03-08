@@ -297,7 +297,8 @@ def build_model(
             print(f"Loaded S1 projector from {proj_path}")
 
     model = BCIQwenModel(qwen_model, tokenizer, projector, original_vocab_size)
-    model.gradient_checkpointing_enable()
+    if stage == 2:
+        model.gradient_checkpointing_enable()
 
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)

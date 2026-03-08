@@ -168,8 +168,8 @@ def run_training(
         dataloader_pin_memory=True,
         deepspeed=deepspeed_config,
         remove_unused_columns=False,
-        gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
+        gradient_checkpointing=(stage == 2),  # S1 doesn't need it (Qwen frozen)
+        gradient_checkpointing_kwargs={"use_reentrant": False} if stage == 2 else None,
     )
 
     callbacks = [EarlyStoppingCallback(early_stopping_patience=early_stopping_patience)]
