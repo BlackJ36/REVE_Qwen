@@ -6,12 +6,17 @@ Three dialogue types matching S2:
   C. 自动纠错 — FBCCA candidates (with errors) → wrong + correction
   D. 纯 NL   — no EEG, conversational text / robot commands
 
+v2 changes:
+  - Ratio: A(70%) C(20%) D(10%) — more spelling, less NL
+  - Short words (2-8 chars) augmented — easier samples for better learning
+  - --short_ratio controls mix of short vs corpus words (default 0.3)
+
 Usage:
     uv run python scripts/generate_correction_data.py \
         --eeg_dir data/eeg_tensors \
         --corpus data/spelling_corpus_5k.json \
         --output_dir data/correction \
-        --n_type_a 5000 --n_type_c 2500 --n_type_d 2500
+        --n_type_a 7000 --n_type_c 2000 --n_type_d 1000
 """
 
 import argparse
@@ -32,6 +37,59 @@ KEYBOARD_CHARS = [
     "7", "8", "9", "0", "_", ".", "<", ">",
 ]
 CHAR_TO_LABEL = {ch: i for i, ch in enumerate(KEYBOARD_CHARS)}
+
+# ─── Short words for augmentation (2-8 chars) ────────────────
+
+SHORT_WORDS = [
+    "GO", "NO", "OK", "HI", "UP", "ON", "IN", "AT", "DO", "SO",
+    "YES", "THE", "AND", "FOR", "NOT", "BUT", "YOU", "ALL", "CAN",
+    "HER", "WAS", "ONE", "OUR", "OUT", "ARE", "HAS", "HIS", "HOW",
+    "MAN", "NEW", "NOW", "OLD", "SEE", "WAY", "MAY", "DAY", "TOO",
+    "ANY", "WHO", "BOY", "DID", "GET", "HIM", "LET", "SAY", "SHE",
+    "USE", "DAD", "MOM", "RUN", "SET", "TRY", "ASK", "OWN", "WHY",
+    "BIG", "END", "PUT", "RED", "SIT", "TOP", "CAT", "DOG", "EAT",
+    "FAR", "HOT", "LOW", "SUN", "BED", "CUT", "FLY", "WIN", "AIR",
+    "BACK", "COME", "DOOR", "EACH", "FIND", "GIVE", "HAND", "JUST",
+    "KEEP", "LONG", "MAKE", "NAME", "OPEN", "PART", "READ", "SAME",
+    "TAKE", "VERY", "WANT", "YEAR", "CALL", "DOES", "EVEN", "FOUR",
+    "GOOD", "HAVE", "HELP", "HERE", "HOME", "INTO", "KNOW", "LAST",
+    "LEFT", "LIFE", "LIKE", "LINE", "LOOK", "LOVE", "MANY", "MEAN",
+    "MORE", "MOST", "MUCH", "MUST", "NEXT", "ONLY", "OVER", "PLAY",
+    "ROOM", "SAID", "SHOW", "SIDE", "SOME", "SUCH", "SURE", "TELL",
+    "THAN", "THEM", "THEN", "THEY", "THIS", "TIME", "TURN", "UPON",
+    "WELL", "WERE", "WHAT", "WHEN", "WILL", "WITH", "WORD", "WORK",
+    "AGAIN", "BEGIN", "BEING", "BELOW", "CARRY", "CLEAN", "CLOSE",
+    "COVER", "DRINK", "EARLY", "EIGHT", "EVERY", "FIRST", "FLOOR",
+    "FOUND", "GOING", "GREEN", "GROUP", "HAPPY", "HEART", "HOUSE",
+    "LARGE", "LATER", "LEARN", "LIGHT", "MIGHT", "MONEY", "MUSIC",
+    "NEVER", "NIGHT", "OFTEN", "ORDER", "OTHER", "PAPER", "PLACE",
+    "PLANT", "POINT", "POWER", "QUICK", "QUITE", "RIGHT", "RIVER",
+    "SEVEN", "SHALL", "SINCE", "SLEEP", "SMALL", "SOUTH", "SPACE",
+    "STAND", "START", "STILL", "STORY", "TABLE", "THEIR", "THERE",
+    "THESE", "THING", "THINK", "THREE", "TODAY", "UNDER", "UNTIL",
+    "VOICE", "WATER", "WHERE", "WHICH", "WHILE", "WHITE", "WHOLE",
+    "WORLD", "WOULD", "WRITE", "YOUNG",
+    "ACROSS", "ALMOST", "ALWAYS", "ANIMAL", "ANSWER", "BEFORE",
+    "BETTER", "CHANGE", "CHURCH", "DINNER", "DOCTOR", "DURING",
+    "ENOUGH", "FAMILY", "FATHER", "FRIEND", "GARDEN", "HEALTH",
+    "ISLAND", "ITSELF", "LITTLE", "LIVING", "MARKET", "MATTER",
+    "MINUTE", "MOTHER", "MYSELF", "NATURE", "NUMBER", "OFFICE",
+    "PEOPLE", "PERIOD", "PERSON", "PLEASE", "PUBLIC", "REASON",
+    "RESULT", "RETURN", "SCHOOL", "SECOND", "SHOULD", "SIMPLE",
+    "SISTER", "STRONG", "SUMMER", "SYSTEM", "TOWARD", "TRAVEL",
+    "WINDOW", "WINTER", "WITHIN", "WONDER",
+    "BECAUSE", "BROTHER", "CAPTAIN", "CERTAIN", "CHICKEN",
+    "COMPANY", "CONTROL", "COUNTRY", "ENGLISH", "EXAMPLE",
+    "GENERAL", "HIMSELF", "HISTORY", "HUNDRED", "KITCHEN",
+    "MEASURE", "MILLION", "MORNING", "NOTHING", "PICTURE",
+    "PROBLEM", "PRODUCT", "PROGRAM", "PROJECT", "PROVIDE",
+    "WEATHER", "WORKING", "WRITING",
+    "ACTUALLY", "ANYTHING", "BUILDING", "BUSINESS", "CHILDREN",
+    "COMPUTER", "CONSIDER", "DAUGHTER", "EVERYONE", "EXERCISE",
+    "FAMILIAR", "FINISHED", "FRIENDLY", "HAPPENED", "HOSPITAL",
+    "INTEREST", "LEARNING", "NATIONAL", "POSSIBLE", "PRACTICE",
+    "PRESSURE", "QUESTION", "TOGETHER",
+]
 
 # ─── SSVEP confusion model (from generate_s2_dialogues.py) ───
 
@@ -334,9 +392,11 @@ def main():
                         choices=["fbcca", "trca", "etrca"])
     parser.add_argument("--decoder_pts", type=int, default=200,
                         help="Timepoints for decoder (200=1s, None=full)")
-    parser.add_argument("--n_type_a", type=int, default=5000)
-    parser.add_argument("--n_type_c", type=int, default=2500)
-    parser.add_argument("--n_type_d", type=int, default=2500)
+    parser.add_argument("--n_type_a", type=int, default=7000)
+    parser.add_argument("--n_type_c", type=int, default=2000)
+    parser.add_argument("--n_type_d", type=int, default=1000)
+    parser.add_argument("--short_ratio", type=float, default=0.3,
+                        help="Fraction of Type A/C that use short words (2-8 chars)")
     parser.add_argument("--val_ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -355,13 +415,32 @@ def main():
         corpus = json.load(f)
     raw_words = corpus.get("sentences", corpus.get("words", []))
 
-    # Filter valid words
-    valid_words = []
+    # Filter valid words (corpus = long phrases)
+    corpus_words = []
     for w in raw_words:
         wl = word_to_labels(w)
         if wl is not None and len(wl) >= 2:
-            valid_words.append((w, wl))
-    print(f"Valid words: {len(valid_words)}")
+            corpus_words.append((w, wl))
+
+    # Build short word pool
+    short_words = []
+    for w in SHORT_WORDS:
+        wl = word_to_labels(w)
+        if wl is not None and len(wl) >= 2:
+            short_words.append((w, wl))
+
+    print(f"Corpus words: {len(corpus_words)} (avg {sum(len(w) for w,_ in corpus_words)/len(corpus_words):.1f} chars)")
+    print(f"Short words: {len(short_words)} (avg {sum(len(w) for w,_ in short_words)/len(short_words):.1f} chars)")
+    print(f"Short ratio: {args.short_ratio:.0%}")
+
+    def pick_word():
+        """Pick a word: short_ratio chance of short, else corpus."""
+        if short_words and random.random() < args.short_ratio:
+            return random.choice(short_words)
+        return random.choice(corpus_words)
+
+    # For backward compatibility
+    valid_words = corpus_words
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -387,7 +466,7 @@ def main():
         attempts = 0
         while generated < na and attempts < na * 3:
             attempts += 1
-            word, wl = random.choice(valid_words)
+            word, wl = pick_word()
             d = make_type_a(word, wl, groups, t3i, t3s)
             if d is not None:
                 dialogues.append(d)
@@ -400,7 +479,7 @@ def main():
         attempts = 0
         while generated < nc and attempts < nc * 5:
             attempts += 1
-            word, wl = random.choice(valid_words)
+            word, wl = pick_word()
             d = make_type_c(word, wl, groups, t3i, t3s)
             if d is not None:
                 dialogues.append(d)
@@ -431,7 +510,9 @@ def main():
         if type_a:
             n_correct = sum(1 for d in type_a if d["noisy_word"] == d["target_word"])
             avg_len = sum(len(d["target_word"]) for d in type_a) / len(type_a)
-            print(f"  Type A: FBCCA correct={n_correct}/{len(type_a)} ({n_correct/len(type_a):.1%}), avg_len={avg_len:.1f}")
+            n_short = sum(1 for d in type_a if len(d["target_word"]) <= 8)
+            print(f"  Type A: FBCCA correct={n_correct}/{len(type_a)} ({n_correct/len(type_a):.1%}), "
+                  f"avg_len={avg_len:.1f}, short={n_short} ({n_short/len(type_a):.0%})")
 
         # Type C stats
         type_c = [d for d in dialogues if d["type"] == "C"]
