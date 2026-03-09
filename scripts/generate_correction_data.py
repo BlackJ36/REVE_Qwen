@@ -320,24 +320,6 @@ def make_type_d():
     }
 
 
-def split_by_type(dialogues, val_ratio=0.2):
-    """Split dialogues into train/val, stratified by type."""
-    by_type = {}
-    for d in dialogues:
-        by_type.setdefault(d["type"], []).append(d)
-
-    train, val = [], []
-    for t, items in by_type.items():
-        random.shuffle(items)
-        n_val = int(len(items) * val_ratio)
-        val.extend(items[:n_val])
-        train.extend(items[n_val:])
-
-    random.shuffle(train)
-    random.shuffle(val)
-    return train, val
-
-
 def main():
     parser = argparse.ArgumentParser(description="Generate BCI correction data (full S2 format)")
     parser.add_argument("--eeg_dir", type=str, default="data/eeg_tensors")
@@ -354,9 +336,11 @@ def main():
 
     random.seed(args.seed)
 
-    # Load FBCCA data (use train split for data, cross-subject handled by FBCCA itself)
-    labels, groups, t3i, t3s = load_fbcca_data(
+    # Load FBCCA data: train subjects for training, val subjects for evaluation
+    train_labels, train_groups, train_t3i, train_t3s = load_fbcca_data(
         args.eeg_dir, "train", args.decoder_type)
+    val_labels, val_groups, val_t3i, val_t3s = load_fbcca_data(
+        args.eeg_dir, "val", args.decoder_type)
 
     # Load corpus
     with open(args.corpus) as f:
@@ -374,95 +358,100 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    dialogues = []
+    # Generate train and val separately with their own FBCCA data
+    n_train_a = args.n_type_a
+    n_train_c = args.n_type_c
+    n_train_d = args.n_type_d
+    n_val_a = int(args.n_type_a * args.val_ratio)
+    n_val_c = int(args.n_type_c * args.val_ratio)
+    n_val_d = int(args.n_type_d * args.val_ratio)
 
-    # Type A: correct spelling
-    print(f"Generating {args.n_type_a} Type A dialogues...")
-    generated = 0
-    attempts = 0
-    while generated < args.n_type_a and attempts < args.n_type_a * 3:
-        attempts += 1
-        word, wl = random.choice(valid_words)
-        d = make_type_a(word, wl, groups, t3i, t3s)
-        if d is not None:
-            dialogues.append(d)
-            generated += 1
-    print(f"  Generated {generated} (attempts: {attempts})")
+    for split, groups, t3i, t3s, na, nc, nd in [
+        ("train", train_groups, train_t3i, train_t3s, n_train_a, n_train_c, n_train_d),
+        ("val", val_groups, val_t3i, val_t3s, n_val_a, n_val_c, n_val_d),
+    ]:
+        print(f"\n--- Generating {split} ---")
+        dialogues = []
 
-    # Type C: auto-correction
-    print(f"Generating {args.n_type_c} Type C dialogues...")
-    generated = 0
-    attempts = 0
-    while generated < args.n_type_c and attempts < args.n_type_c * 5:
-        attempts += 1
-        word, wl = random.choice(valid_words)
-        d = make_type_c(word, wl, groups, t3i, t3s)
-        if d is not None:
-            dialogues.append(d)
-            generated += 1
-    print(f"  Generated {generated} (attempts: {attempts})")
+        # Type A
+        print(f"  Type A: {na}...")
+        generated = 0
+        attempts = 0
+        while generated < na and attempts < na * 3:
+            attempts += 1
+            word, wl = random.choice(valid_words)
+            d = make_type_a(word, wl, groups, t3i, t3s)
+            if d is not None:
+                dialogues.append(d)
+                generated += 1
+        print(f"    Generated {generated}")
 
-    # Type D: pure NL
-    print(f"Generating {args.n_type_d} Type D dialogues...")
-    for _ in range(args.n_type_d):
-        dialogues.append(make_type_d())
+        # Type C
+        print(f"  Type C: {nc}...")
+        generated = 0
+        attempts = 0
+        while generated < nc and attempts < nc * 5:
+            attempts += 1
+            word, wl = random.choice(valid_words)
+            d = make_type_c(word, wl, groups, t3i, t3s)
+            if d is not None:
+                dialogues.append(d)
+                generated += 1
+        print(f"    Generated {generated}")
 
-    # Split train/val
-    train, val = split_by_type(dialogues, val_ratio=args.val_ratio)
+        # Type D
+        print(f"  Type D: {nd}...")
+        for _ in range(nd):
+            dialogues.append(make_type_d())
 
-    # Save
-    for name, data in [("train", train), ("val", val)]:
-        path = out_dir / f"{name}.jsonl"
+        random.shuffle(dialogues)
+
+        # Save
+        path = out_dir / f"{split}.jsonl"
         with open(path, "w") as f:
-            for d in data:
+            for d in dialogues:
                 f.write(json.dumps(d, ensure_ascii=False) + "\n")
 
-    # Stats
-    for name, data in [("Train", train), ("Val", val)]:
+        # Stats
         type_counts = {}
-        for d in data:
+        for d in dialogues:
             type_counts[d["type"]] = type_counts.get(d["type"], 0) + 1
-        print(f"\n{name}: {len(data)} dialogues")
-        for t, c in sorted(type_counts.items()):
-            print(f"  Type {t}: {c}")
+        print(f"  {split}: {len(dialogues)} dialogues — {type_counts}")
 
-    # Type A stats
-    type_a = [d for d in dialogues if d["type"] == "A"]
-    if type_a:
-        n_correct = sum(1 for d in type_a if d["noisy_word"] == d["target_word"])
-        avg_len = sum(len(d["target_word"]) for d in type_a) / len(type_a)
-        print(f"\nType A stats:")
-        print(f"  FBCCA already correct: {n_correct}/{len(type_a)} ({n_correct/len(type_a):.1%})")
-        print(f"  Avg word length: {avg_len:.1f}")
+        # Type A stats
+        type_a = [d for d in dialogues if d["type"] == "A"]
+        if type_a:
+            n_correct = sum(1 for d in type_a if d["noisy_word"] == d["target_word"])
+            avg_len = sum(len(d["target_word"]) for d in type_a) / len(type_a)
+            print(f"  Type A: FBCCA correct={n_correct}/{len(type_a)} ({n_correct/len(type_a):.1%}), avg_len={avg_len:.1f}")
 
-    # Type C stats
-    type_c = [d for d in dialogues if d["type"] == "C"]
-    if type_c:
-        len_diffs = [len(d.get("wrong_word", "")) - len(d["target_word"]) for d in type_c]
-        n_shorter = sum(1 for x in len_diffs if x < 0)
-        n_longer = sum(1 for x in len_diffs if x > 0)
-        n_same = sum(1 for x in len_diffs if x == 0)
-        print(f"\nType C stats:")
-        print(f"  Length: same={n_same}, shorter(drops)={n_shorter}, longer(repeats)={n_longer}")
+        # Type C stats
+        type_c = [d for d in dialogues if d["type"] == "C"]
+        if type_c:
+            len_diffs = [len(d.get("wrong_word", "")) - len(d["target_word"]) for d in type_c]
+            n_shorter = sum(1 for x in len_diffs if x < 0)
+            n_longer = sum(1 for x in len_diffs if x > 0)
+            n_same = sum(1 for x in len_diffs if x == 0)
+            print(f"  Type C: same={n_same}, drops={n_shorter}, repeats={n_longer}")
 
-    # Examples
-    print("\n" + "=" * 60)
-    print("Examples:")
-    print("=" * 60)
-    for t in ["A", "C", "D"]:
-        samples = [d for d in val if d["type"] == t][:2]
-        for s in samples:
-            print(f"\n--- Type {t} ---")
-            print(f"[System] {s['messages'][0]['content'][:60]}...")
-            user_content = s['messages'][1]['content']
-            # Truncate user content for display
-            user_lines = user_content.split('\n')
-            if len(user_lines) > 5:
-                display = '\n'.join(user_lines[:3] + ['  ...'] + user_lines[-1:])
-            else:
-                display = user_content
-            print(f"[User]\n{display}")
-            print(f"[Assistant] {s['messages'][2]['content'][:80]}")
+        # Show examples from val
+        if split == "val":
+            print("\n" + "=" * 60)
+            print("Val Examples:")
+            print("=" * 60)
+            for t in ["A", "C", "D"]:
+                samples = [d for d in dialogues if d["type"] == t][:2]
+                for s in samples:
+                    print(f"\n--- Type {t} ---")
+                    print(f"[System] {s['messages'][0]['content'][:60]}...")
+                    user_content = s['messages'][1]['content']
+                    user_lines = user_content.split('\n')
+                    if len(user_lines) > 5:
+                        display = '\n'.join(user_lines[:3] + ['  ...'] + user_lines[-1:])
+                    else:
+                        display = user_content
+                    print(f"[User]\n{display}")
+                    print(f"[Assistant] {s['messages'][2]['content'][:80]}")
 
 
 if __name__ == "__main__":
