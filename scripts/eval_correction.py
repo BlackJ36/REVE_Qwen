@@ -59,24 +59,54 @@ def extract_correction(text):
     return text.strip(), text.strip()
 
 
-def run_generation(model, tokenizer, data_path, device, max_new_tokens=80):
-    """Run generation and compute per-type metrics."""
+def run_generation(model, tokenizer, data_path, device, max_new_tokens=80,
+                   batch_size=8, max_samples=None):
+    """Run batched generation and compute per-type metrics."""
+    import time
+
     samples = []
     with open(data_path) as f:
         for line in f:
             samples.append(json.loads(line))
 
+    if max_samples and max_samples < len(samples):
+        # Stratified sample: keep proportions of each type
+        import random
+        rng = random.Random(42)
+        by_type = defaultdict(list)
+        for s in samples:
+            by_type[s.get("type", "A")].append(s)
+        total = len(samples)
+        sampled = []
+        for dtype, items in by_type.items():
+            n = max(1, round(len(items) / total * max_samples))
+            sampled.extend(rng.sample(items, min(n, len(items))))
+        samples = sampled[:max_samples]
+        print(f"  Subsampled to {len(samples)} samples")
+
     results = {"A": [], "C": [], "D": []}
     model.eval()
+    t0 = time.time()
 
-    for i, sample in enumerate(samples):
-        dtype = sample.get("type", "A")
+    # Prepare all prompts
+    all_prompts = []
+    for sample in samples:
         messages = sample["messages"][:2]  # system + user only
         text = tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True,
         )
+        all_prompts.append(text)
 
-        inputs = tokenizer(text, return_tensors="pt").to(device)
+    # Batch generation
+    for batch_start in range(0, len(samples), batch_size):
+        batch_end = min(batch_start + batch_size, len(samples))
+        batch_prompts = all_prompts[batch_start:batch_end]
+        batch_samples = samples[batch_start:batch_end]
+
+        inputs = tokenizer(
+            batch_prompts, return_tensors="pt", padding=True, truncation=True,
+        ).to(device)
+        prompt_lens = [inputs["attention_mask"][j].sum().item() for j in range(len(batch_prompts))]
 
         with torch.no_grad():
             output_ids = model.generate(
@@ -85,24 +115,36 @@ def run_generation(model, tokenizer, data_path, device, max_new_tokens=80):
                 do_sample=False,
                 temperature=None,
                 top_p=None,
+                top_k=None,
             )
 
-        new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]
-        pred = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
-        target = sample["messages"][2]["content"]
+        for j, sample in enumerate(batch_samples):
+            new_tokens = output_ids[j][prompt_lens[j]:]
+            pred = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+            target = sample["messages"][2]["content"]
+            dtype = sample.get("type", "A")
 
-        result = {
-            "type": dtype,
-            "pred": pred,
-            "target": target,
-            "target_word": sample.get("target_word", ""),
-            "noisy_word": sample.get("noisy_word", ""),
-            "exact_match": pred == target,
-        }
-        results[dtype].append(result)
+            result = {
+                "type": dtype,
+                "pred": pred,
+                "target": target,
+                "target_word": sample.get("target_word", ""),
+                "noisy_word": sample.get("noisy_word", ""),
+                "exact_match": pred == target,
+            }
+            results[dtype].append(result)
 
-        if i < 10 or (i < 50 and i % 5 == 0):
-            print(f"  [{i}][{dtype}] pred={pred[:60]} | target={target[:60]}")
+            idx = batch_start + j
+            if idx < 5 or idx % 100 == 0:
+                print(f"  [{idx}/{len(samples)}][{dtype}] pred={pred[:70]}")
+                print(f"  {' ':>{len(str(len(samples)))}}       target={target[:70]}")
+
+        elapsed = time.time() - t0
+        speed = batch_end / elapsed
+        eta = (len(samples) - batch_end) / speed if speed > 0 else 0
+        if batch_start % (batch_size * 5) == 0 or batch_end == len(samples):
+            print(f"  [{batch_end}/{len(samples)}] {speed:.1f} samples/s, "
+                  f"ETA {eta:.0f}s", flush=True)
 
     return results
 
@@ -168,6 +210,9 @@ def main():
     parser.add_argument("--run_base", action="store_true",
                         help="Also run base model (zero-shot)")
     parser.add_argument("--split", type=str, default="val")
+    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--max_samples", type=int, default=None,
+                        help="Max samples to evaluate (stratified, default: all)")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -192,7 +237,9 @@ def main():
             model_path, torch_dtype=torch.bfloat16,
             trust_remote_code=True, low_cpu_mem_usage=True,
         ).to(device)
-        base_results = run_generation(base_model, tokenizer, data_path, device)
+        base_results = run_generation(base_model, tokenizer, data_path, device,
+                                      batch_size=args.batch_size,
+                                      max_samples=args.max_samples)
         del base_model
         torch.cuda.empty_cache()
 
@@ -213,7 +260,9 @@ def main():
             ft_model = PeftModel.from_pretrained(ft_model, str(ckpt_dir))
         ft_model = ft_model.to(device)
 
-        ft_results = run_generation(ft_model, tokenizer, data_path, device)
+        ft_results = run_generation(ft_model, tokenizer, data_path, device,
+                                    batch_size=args.batch_size,
+                                    max_samples=args.max_samples)
         ft_metrics = compute_metrics(ft_results)
 
         print("\nFine-tuned model results:")

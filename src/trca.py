@@ -315,7 +315,7 @@ class FBTRCAClassifier:
 def leave_one_block_out_trca(eeg_data, labels, subject_ids, block_ids,
                              trial_duration_pts=600, sfreq=200.0,
                              ensemble=True, device="cuda", batch_size=256,
-                             return_full_scores=False):
+                             return_full_scores=False, latency_pts=0):
     """Evaluate FBTRCA using leave-one-block-out per subject.
 
     For each subject, each block is held out in turn while the remaining
@@ -332,6 +332,7 @@ def leave_one_block_out_trca(eeg_data, labels, subject_ids, block_ids,
         device: torch device string
         batch_size: batch size for prediction
         return_full_scores: if True, also return full 40-dim scores for KD
+        latency_pts: skip first N timepoints (SSVEP transient response, default 0)
 
     Returns:
         all_preds: (N, 3) top-3 predicted indices
@@ -341,9 +342,13 @@ def leave_one_block_out_trca(eeg_data, labels, subject_ids, block_ids,
     N = len(labels)
     total_T = eeg_data.shape[2]
 
-    # Truncate to requested duration
-    effective_T = min(trial_duration_pts, total_T)
-    eeg = eeg_data[:, :, :effective_T]
+    # Skip SSVEP transient response + truncate to requested duration
+    t_start = latency_pts
+    t_end = t_start + trial_duration_pts
+    if t_end > total_T:
+        t_end = total_T
+    effective_T = t_end - t_start
+    eeg = eeg_data[:, :, t_start:t_end]
 
     all_preds = torch.full((N, 3), -1, dtype=torch.int64)
     all_scores = torch.zeros(N, 3, dtype=torch.float32)

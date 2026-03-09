@@ -1,13 +1,12 @@
-"""Evaluate CCA / FBCCA baselines on val correction data.
+"""Evaluate all decoder baselines: CCA / FBCCA / eTRCA at 1s and 2s.
 
-Computes word-level and char-level accuracy for:
-  1. FBCCA 1s (200pts) — from precomputed val_fbcca_200pt.pt
-  2. FBCCA 3s (full)   — from precomputed val_fbcca.pt
-  3. CCA 1s (single band, no filter bank) — computed from raw EEG
+Computes per-trial accuracy and word-level spelling metrics for each decoder.
+CCA is computed from raw EEG (single band, no filter bank).
+FBCCA and eTRCA use precomputed top-3 files.
 
 Usage:
     uv run python scripts/eval_baselines.py
-    uv run python scripts/eval_baselines.py --compute_cca  # also compute CCA from raw EEG
+    uv run python scripts/eval_baselines.py --decoder_pts 200 400
 """
 
 import argparse
@@ -189,111 +188,171 @@ def compute_cca_from_eeg(eeg_dir, split, n_timepoints=200):
     }
 
 
+def compute_cca_word_metrics(eeg_dir, split, n_timepoints, labels, subject_ids,
+                             block_ids, corpus_words, n_words=1000, seed=42):
+    """Compute CCA (single-band) top-3 from raw EEG and then word-level metrics."""
+    import random
+    from src.fbcca import FBCCAFeatureExtractor, OCCIPITAL_CHANNELS
+
+    rng = random.Random(seed)
+    eeg_dir = Path(eeg_dir)
+    eeg_data = torch.load(eeg_dir / f"{split}_eeg.pt", map_location="cpu", weights_only=True)
+    eeg = eeg_data["eeg_data"]
+    channel_names = eeg_data["channel_names"]
+
+    occ_indices = [channel_names.index(ch) for ch in OCCIPITAL_CHANNELS if ch in channel_names]
+
+    latency = 28
+    total_T = eeg.shape[2]
+    t_end = min(latency + n_timepoints, total_T)
+    effective_T = t_end - latency
+    eeg_crop = eeg[:, occ_indices, latency:t_end]
+
+    fbcca_mod = FBCCAFeatureExtractor(sfreq=200.0, n_timepoints=effective_T)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    fbcca_mod = fbcca_mod.to(device)
+
+    all_cca_top3 = []
+    batch_size = 256
+    for i in range(0, len(eeg_crop), batch_size):
+        batch = eeg_crop[i:i+batch_size].to(device)
+        with torch.no_grad():
+            feat = fbcca_mod(batch)  # (B, 200) = 5 bands × 40 freqs
+        feat_5x40 = feat.reshape(-1, 5, 40)
+        cca_scores = feat_5x40[:, 0, :]  # band 0 only
+        top3 = cca_scores.topk(3, dim=1).indices.cpu()
+        all_cca_top3.append(top3)
+
+    cca_top3 = torch.cat(all_cca_top3, dim=0)  # (N, 3)
+
+    # Per-trial accuracy
+    top1_acc = (cca_top3[:, 0] == labels).float().mean().item()
+    top3_acc = (cca_top3 == labels.unsqueeze(1)).any(dim=1).float().mean().item()
+
+    # Word-level: reuse same logic as compute_word_metrics_from_precomputed
+    CHAR_TO_LABEL = {ch: i for i, ch in enumerate(KEYBOARD_CHARS)}
+    groups = defaultdict(lambda: defaultdict(list))
+    for idx in range(len(labels)):
+        key = (int(subject_ids[idx]), int(block_ids[idx]))
+        groups[key][int(labels[idx])].append(idx)
+
+    results = []
+    for _ in range(n_words * 3):
+        if len(results) >= n_words:
+            break
+        word = rng.choice(corpus_words)
+        label_indices = [CHAR_TO_LABEL.get(c) for c in word]
+        if None in label_indices:
+            continue
+        group_keys = list(groups.keys())
+        rng.shuffle(group_keys)
+        for gk in group_keys:
+            if all(len(groups[gk].get(l, [])) > 0 for l in label_indices):
+                decoded = []
+                for l in label_indices:
+                    tidx = rng.choice(groups[gk][l])
+                    pred_label = int(cca_top3[tidx, 0])
+                    decoded.append(KEYBOARD_CHARS[pred_label])
+                results.append({"target": word, "noisy": "".join(decoded)})
+                break
+
+    n = len(results)
+    word_correct = sum(1 for r in results if r["noisy"] == r["target"])
+    char_correct = sum(
+        sum(1 for a, b in zip(r["noisy"], r["target"]) if a == b)
+        for r in results
+    )
+    char_total = sum(len(r["target"]) for r in results)
+    total_ed = sum(edit_distance(r["noisy"], r["target"]) for r in results)
+
+    return {
+        "top1": top1_acc,
+        "top3": top3_acc,
+        "n_words": n,
+        "word_acc": word_correct / max(n, 1),
+        "char_acc": char_correct / max(char_total, 1),
+        "avg_ed": total_ed / max(n, 1),
+    }
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate CCA/FBCCA baselines")
+    parser = argparse.ArgumentParser(description="Evaluate all decoder baselines")
     parser.add_argument("--eeg_dir", type=str, default="data/eeg_tensors")
     parser.add_argument("--corpus", type=str, default="data/spelling_corpus_5k.json")
-    parser.add_argument("--correction_dir", type=str, default="data/correction")
-    parser.add_argument("--compute_cca", action="store_true",
-                        help="Compute CCA from raw EEG (needs GPU)")
+    parser.add_argument("--decoder_pts", type=int, nargs="*", default=[200, 400],
+                        help="Timepoints to evaluate (default: 200 400 = 1s 2s)")
     args = parser.parse_args()
 
     eeg_dir = Path(args.eeg_dir)
     split = "val"
 
-    # Load common data
     eeg_data = torch.load(eeg_dir / f"{split}_eeg.pt", map_location="cpu", weights_only=True)
     labels = eeg_data["labels"]
     subject_ids = eeg_data["subject_ids"]
     block_ids = eeg_data["block_ids"]
 
-    # Load corpus
     with open(args.corpus) as f:
         corpus = json.load(f)
     words = [w for w in corpus.get("sentences", []) if len(w) >= 2 and w.isalpha()]
 
     print(f"Val: {len(labels)} trials, {len(words)} corpus words\n")
 
-    # ─── 1. Per-trial accuracy from precomputed ───
-    print("=" * 60)
-    print("Per-trial accuracy (val subjects)")
-    print("=" * 60)
-    for decoder_name, desc in [
-        ("fbcca_200pt", "FBCCA 1s (200pts)"),
-        ("fbcca_100pt", "FBCCA 0.5s (100pts)"),
-        ("fbcca", "FBCCA full (~3s)"),
-        ("etrca", "eTRCA"),
-    ]:
-        fpath = eeg_dir / f"{split}_{decoder_name}.pt"
-        if not fpath.exists():
-            continue
-        cand = torch.load(fpath, map_location="cpu", weights_only=True)
-        top1_acc, top3_acc = compute_trial_acc(cand["top3_indices"], labels)
-        print(f"  {desc:25s}  top1={top1_acc:.1%}  top3={top3_acc:.1%}")
+    # Collect all results: (decoder, pts) → {top1, top3, word_acc, char_acc, avg_ed}
+    all_results = {}
 
-    # ─── 2. Word-level accuracy (simulated spelling) ───
+    for pts in args.decoder_pts:
+        dur_s = pts / 200
+        pts_suffix = f"_{pts}pt"
+
+        # FBCCA
+        fbcca_path = eeg_dir / f"{split}_fbcca{pts_suffix}.pt"
+        if fbcca_path.exists():
+            cand = torch.load(fbcca_path, map_location="cpu", weights_only=True)
+            top1, top3 = compute_trial_acc(cand["top3_indices"], labels)
+            wm = compute_word_metrics_from_precomputed(
+                args.eeg_dir, split, f"fbcca{pts_suffix}", labels,
+                subject_ids, block_ids, words)
+            all_results[("FBCCA", pts)] = {
+                "top1": top1, "top3": top3, **wm}
+
+        # eTRCA
+        etrca_path = eeg_dir / f"{split}_etrca{pts_suffix}.pt"
+        if etrca_path.exists():
+            cand = torch.load(etrca_path, map_location="cpu", weights_only=True)
+            top1, top3 = compute_trial_acc(cand["top3_indices"], labels)
+            wm = compute_word_metrics_from_precomputed(
+                args.eeg_dir, split, f"etrca{pts_suffix}", labels,
+                subject_ids, block_ids, words)
+            all_results[("eTRCA", pts)] = {
+                "top1": top1, "top3": top3, **wm}
+
+        # CCA (from raw EEG)
+        print(f"Computing CCA {dur_s:.0f}s ({pts}pts) from raw EEG...")
+        cca = compute_cca_word_metrics(
+            args.eeg_dir, split, pts, labels, subject_ids, block_ids, words)
+        all_results[("CCA", pts)] = cca
+
+    # ─── Print table ───
     print()
-    print("=" * 60)
-    print("Word-level accuracy (1000 random words, val subjects)")
-    print("=" * 60)
-    for decoder_name, desc in [
-        ("fbcca_200pt", "FBCCA 1s (200pts)"),
-        ("fbcca", "FBCCA full (~3s)"),
-        ("etrca", "eTRCA"),
-    ]:
-        fpath = eeg_dir / f"{split}_{decoder_name}.pt"
-        if not fpath.exists():
-            continue
-        m = compute_word_metrics_from_precomputed(
-            args.eeg_dir, split, decoder_name, labels, subject_ids, block_ids, words)
-        print(f"  {desc:25s}  word_acc={m['word_acc']:.1%}  char_acc={m['char_acc']:.1%}  avg_ed={m['avg_ed']:.2f}")
+    print("=" * 80)
+    print(f"{'Decoder':>10} {'Duration':>8} │ {'Trial':>6} {'Top1':>6} {'Top3':>6} │ "
+          f"{'Word':>6} {'Acc':>6} {'Char':>6} {'Acc':>6} {'AvgED':>6}")
+    print("─" * 80)
 
-    # ─── 3. Correction data baseline (from val.jsonl) ───
-    val_jsonl = Path(args.correction_dir) / "val.jsonl"
-    if val_jsonl.exists():
-        print()
-        print("=" * 60)
-        print("Correction val.jsonl baseline (FBCCA noisy_word vs target)")
-        print("=" * 60)
-        samples = []
-        with open(val_jsonl) as f:
-            for line in f:
-                samples.append(json.loads(line))
-
-        for dtype in ["A", "C", "A+C"]:
-            if dtype == "A+C":
-                subset = [s for s in samples if s["type"] in ("A", "C")]
-            else:
-                subset = [s for s in samples if s["type"] == dtype]
-            if not subset:
+    for pts in args.decoder_pts:
+        dur_s = pts / 200
+        for decoder in ["CCA", "FBCCA", "eTRCA"]:
+            key = (decoder, pts)
+            if key not in all_results:
                 continue
-            n = len(subset)
-            word_ok = sum(1 for s in subset if s["noisy_word"] == s["target_word"])
-            char_ok = sum(
-                sum(1 for a, b in zip(s["noisy_word"], s["target_word"]) if a == b)
-                for s in subset
-            )
-            char_total = sum(len(s["target_word"]) for s in subset)
-            avg_ed = sum(edit_distance(s["noisy_word"], s["target_word"]) for s in subset) / n
-            print(f"  Type {dtype:5s} (n={n:4d})  word_acc={word_ok/n:.1%}  char_acc={char_ok/char_total:.1%}  avg_ed={avg_ed:.2f}")
+            r = all_results[key]
+            print(f"  {decoder:>8} {dur_s:>5.0f}s    │ "
+                  f"top1={r['top1']:>5.1%} top3={r['top3']:>5.1%} │ "
+                  f"word={r['word_acc']:>5.1%} char={r['char_acc']:>5.1%} "
+                  f"ed={r['avg_ed']:>5.2f}")
+        print("─" * 80)
 
-    # ─── 4. CCA from raw EEG (optional) ───
-    if args.compute_cca:
-        print()
-        print("=" * 60)
-        print("CCA vs FBCCA computed from raw EEG (val subjects)")
-        print("=" * 60)
-        for pts, desc in [(200, "1s"), (400, "2s"), (600, "3s")]:
-            # Check valid_pts
-            valid_pts = eeg_data.get("valid_pts", None)
-            if valid_pts is not None:
-                min_valid = int(valid_pts.min())
-                if pts > min_valid - 28:
-                    print(f"  Skipping {desc} ({pts}pts): some trials only have {min_valid} valid pts")
-                    continue
-            m = compute_cca_from_eeg(args.eeg_dir, split, n_timepoints=pts)
-            print(f"  {desc} ({pts}pts):  CCA top1={m['cca_top1']:.1%} top3={m['cca_top3']:.1%}"
-                  f"  |  FBCCA top1={m['fbcca_top1']:.1%} top3={m['fbcca_top3']:.1%}")
+    print()
 
 
 if __name__ == "__main__":

@@ -39,7 +39,7 @@ def trca_output_filename(split, trial_duration_pts, ensemble=False):
 
 def precompute_split(eeg_dir, split, window_size, window_step, device,
                      trial_duration_pts=600, ensemble=False, batch_size=256,
-                     save_full_scores=False):
+                     save_full_scores=False, latency_pts=0):
     """Precompute TRCA top-3 for one split via leave-one-block-out."""
     eeg_path = eeg_dir / f"{split}_eeg.pt"
     if not eeg_path.exists():
@@ -53,11 +53,14 @@ def precompute_split(eeg_dir, split, window_size, window_step, device,
     block_ids = data["block_ids"]     # (N,)
     N, C, total_T = eeg_data.shape
 
-    effective_T = min(trial_duration_pts, total_T)
+    # Account for latency skip in effective duration
+    t_end = min(latency_pts + trial_duration_pts, total_T)
+    effective_T = t_end - latency_pts
     method_name = "eTRCA" if ensemble else "TRCA"
     freq_res = 200.0 / effective_T
+    lat_info = f", +{latency_pts}pt latency skip" if latency_pts else ""
     print(f"  {split}: {N} trials, {method_name} on {effective_T}pts "
-          f"({effective_T/200:.1f}s, Δf={freq_res:.2f}Hz)")
+          f"({effective_T/200:.1f}s, Δf={freq_res:.2f}Hz{lat_info})")
 
     # Run leave-one-block-out TRCA
     trca_result = leave_one_block_out_trca(
@@ -68,6 +71,7 @@ def precompute_split(eeg_dir, split, window_size, window_step, device,
         device=device,
         batch_size=batch_size,
         return_full_scores=save_full_scores,
+        latency_pts=latency_pts,
     )
     if save_full_scores:
         all_preds, all_scores, all_full_scores = trca_result
@@ -137,10 +141,17 @@ def main():
                         help="Use ensemble TRCA (eTRCA) instead of standard TRCA")
     parser.add_argument("--save_full_scores", action="store_true",
                         help="Save full 40-dim correlation scores for knowledge distillation")
+    parser.add_argument("--no_latency_skip", action="store_true",
+                        help="Disable 0.14s SSVEP latency skip (default: enabled)")
     args = parser.parse_args()
 
     eeg_dir = Path(args.eeg_dir)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+
+    # Latency skip (default: 28pts = 0.14s @ 200Hz)
+    latency_pts = 0 if args.no_latency_skip else 28
+    if latency_pts:
+        print(f"Latency skip: {latency_pts}pts ({latency_pts/200:.2f}s)")
 
     durations = args.durations if args.durations else [args.trial_duration]
     method = "eTRCA" if args.ensemble else "TRCA"
@@ -162,6 +173,7 @@ def main():
                 ensemble=args.ensemble,
                 batch_size=args.batch_size,
                 save_full_scores=args.save_full_scores,
+                latency_pts=latency_pts,
             )
 
     print("\nDone.")

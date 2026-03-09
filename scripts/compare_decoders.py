@@ -25,7 +25,8 @@ from src.fbcca import FBCCAFeatureExtractor, BAND_WEIGHTS
 from src.trca import FBTRCAClassifier, leave_one_block_out_trca
 
 
-def compute_fbcca_predictions(eeg_data, labels, trial_duration_pts, device, batch_size=256):
+def compute_fbcca_predictions(eeg_data, labels, trial_duration_pts, device,
+                              batch_size=256, latency_pts=0):
     """Run FBCCA on all trials and return top-3 predictions.
 
     Args:
@@ -34,14 +35,16 @@ def compute_fbcca_predictions(eeg_data, labels, trial_duration_pts, device, batc
         trial_duration_pts: timepoints to use
         device: torch device
         batch_size: batch size
+        latency_pts: skip first N timepoints (SSVEP transient response)
 
     Returns:
         top3_indices: (N, 3) int64
         top3_scores: (N, 3) float32
     """
     N, C, total_T = eeg_data.shape
-    effective_T = min(trial_duration_pts, total_T)
-    eeg = eeg_data[:, :, :effective_T]
+    t_end = min(latency_pts + trial_duration_pts, total_T)
+    effective_T = t_end - latency_pts
+    eeg = eeg_data[:, :, latency_pts:t_end]
 
     fbcca = FBCCAFeatureExtractor(sfreq=200.0, n_timepoints=effective_T).to(device)
     band_weights = torch.tensor(BAND_WEIGHTS, dtype=torch.float32, device=device)
@@ -153,10 +156,15 @@ def main():
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--per_subject", action="store_true",
                         help="Print per-subject breakdown")
+    parser.add_argument("--no_latency_skip", action="store_true",
+                        help="Disable 0.14s SSVEP latency skip (default: enabled)")
     args = parser.parse_args()
 
     eeg_dir = Path(args.eeg_dir)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    latency_pts = 0 if args.no_latency_skip else 28
+    if latency_pts:
+        print(f"Latency skip: {latency_pts}pts ({latency_pts/200:.2f}s)")
 
     # Load data
     data_path = eeg_dir / f"{args.split}_eeg.pt"
@@ -185,17 +193,20 @@ def main():
 
             if method == "fbcca":
                 preds, scores = compute_fbcca_predictions(
-                    eeg_data, labels, pts, device, args.batch_size)
+                    eeg_data, labels, pts, device, args.batch_size,
+                    latency_pts=latency_pts)
             elif method == "trca":
                 preds, scores = leave_one_block_out_trca(
                     eeg_data, labels, subject_ids, block_ids,
                     trial_duration_pts=pts, sfreq=200.0, ensemble=False,
-                    device=device, batch_size=args.batch_size)
+                    device=device, batch_size=args.batch_size,
+                    latency_pts=latency_pts)
             elif method == "etrca":
                 preds, scores = leave_one_block_out_trca(
                     eeg_data, labels, subject_ids, block_ids,
                     trial_duration_pts=pts, sfreq=200.0, ensemble=True,
-                    device=device, batch_size=args.batch_size)
+                    device=device, batch_size=args.batch_size,
+                    latency_pts=latency_pts)
 
             elapsed = time.time() - t0
             acc = compute_accuracy(preds, labels)
