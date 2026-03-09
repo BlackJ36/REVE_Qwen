@@ -157,24 +157,27 @@ def compute_metrics(results):
     type_a = results.get("A", [])
     if type_a:
         exact = sum(r["exact_match"] for r in type_a)
-        # Character accuracy: compare pred vs target_word
-        char_correct = 0
+        # Character accuracy: 1 - (edit_distance / target_length)
         char_total = 0
+        total_ed = 0
         for r in type_a:
             target = r["target_word"]
             pred = r["pred"]
-            for j in range(min(len(pred), len(target))):
-                if pred[j] == target[j]:
-                    char_correct += 1
+            ed = edit_distance(pred, target)
+            total_ed += ed
             char_total += len(target)
 
         metrics["A_word_acc"] = exact / len(type_a)
-        metrics["A_char_acc"] = char_correct / max(char_total, 1)
+        metrics["A_char_acc"] = 1.0 - total_ed / max(char_total, 1)
+        metrics["A_avg_ed"] = total_ed / len(type_a)
         metrics["A_count"] = len(type_a)
 
         # FBCCA baseline for Type A
         noisy_exact = sum(1 for r in type_a if r["noisy_word"] == r["target_word"])
+        noisy_ed = sum(edit_distance(r["noisy_word"], r["target_word"]) for r in type_a)
         metrics["A_fbcca_word_acc"] = noisy_exact / len(type_a)
+        metrics["A_fbcca_char_acc"] = 1.0 - noisy_ed / max(char_total, 1)
+        metrics["A_fbcca_avg_ed"] = noisy_ed / len(type_a)
 
     # Type C: correction accuracy
     type_c = results.get("C", [])
