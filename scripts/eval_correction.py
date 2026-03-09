@@ -1,0 +1,233 @@
+"""Evaluate BCI spelling correction model (full S2 format).
+
+Evaluates on Type A (spelling) and Type C (correction) samples.
+Type D (NL) is evaluated separately.
+
+Metrics:
+  - word_acc: exact match of full output
+  - char_acc: character-level accuracy (for Type A)
+  - correction_rate: how often model fixes FBCCA errors
+  - trust_rate: how often model preserves FBCCA correct results
+
+Usage:
+    uv run python scripts/eval_correction.py \
+        --data_dir data/correction \
+        --checkpoint output/correction/final
+"""
+
+import argparse
+import json
+import re
+from pathlib import Path
+
+import torch
+from peft import PeftModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+def edit_distance(s1, s2):
+    """Levenshtein distance."""
+    m, n = len(s1), len(s2)
+    dp = list(range(n + 1))
+    for i in range(1, m + 1):
+        prev = dp[0]
+        dp[0] = i
+        for j in range(1, n + 1):
+            temp = dp[j]
+            dp[j] = prev if s1[i-1] == s2[j-1] else 1 + min(prev, dp[j], dp[j-1])
+            prev = temp
+    return dp[n]
+
+
+def extract_correction(text):
+    """Extract the corrected word from Type C assistant output.
+
+    Format: '{wrong} 你是不是想拼{right}' or similar templates.
+    Returns (wrong_part, right_part) or (text, text) if no correction found.
+    """
+    patterns = [
+        r"(.+?)\s+你是不是想拼(.+)",
+        r"(.+?)\s+可能你想输入的是(.+)",
+        r"(.+?)\s+这看起来像是(.+?)的误拼",
+        r"(.+?)\s+检测到可能的拼写错误\s+建议修正为(.+)",
+        r"(.+?)\s+自动纠正为(.+)",
+    ]
+    for p in patterns:
+        m = re.match(p, text)
+        if m:
+            return m.group(1).strip(), m.group(2).strip()
+    return text.strip(), text.strip()
+
+
+def run_generation(model, tokenizer, data_path, device, max_new_tokens=80):
+    """Run generation and compute per-type metrics."""
+    samples = []
+    with open(data_path) as f:
+        for line in f:
+            samples.append(json.loads(line))
+
+    results = {"A": [], "C": [], "D": []}
+    model.eval()
+
+    for i, sample in enumerate(samples):
+        dtype = sample.get("type", "A")
+        messages = sample["messages"][:2]  # system + user only
+        text = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True,
+        )
+
+        inputs = tokenizer(text, return_tensors="pt").to(device)
+
+        with torch.no_grad():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                temperature=None,
+                top_p=None,
+            )
+
+        new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]
+        pred = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        target = sample["messages"][2]["content"]
+
+        result = {
+            "type": dtype,
+            "pred": pred,
+            "target": target,
+            "target_word": sample.get("target_word", ""),
+            "noisy_word": sample.get("noisy_word", ""),
+            "exact_match": pred == target,
+        }
+        results[dtype].append(result)
+
+        if i < 10 or (i < 50 and i % 5 == 0):
+            print(f"  [{i}][{dtype}] pred={pred[:60]} | target={target[:60]}")
+
+    return results
+
+
+def compute_metrics(results):
+    """Compute metrics per type."""
+    metrics = {}
+
+    # Type A: spelling accuracy
+    type_a = results.get("A", [])
+    if type_a:
+        exact = sum(r["exact_match"] for r in type_a)
+        # Character accuracy: compare pred vs target_word
+        char_correct = 0
+        char_total = 0
+        for r in type_a:
+            target = r["target_word"]
+            pred = r["pred"]
+            for j in range(min(len(pred), len(target))):
+                if pred[j] == target[j]:
+                    char_correct += 1
+            char_total += len(target)
+
+        metrics["A_word_acc"] = exact / len(type_a)
+        metrics["A_char_acc"] = char_correct / max(char_total, 1)
+        metrics["A_count"] = len(type_a)
+
+        # FBCCA baseline for Type A
+        noisy_exact = sum(1 for r in type_a if r["noisy_word"] == r["target_word"])
+        metrics["A_fbcca_word_acc"] = noisy_exact / len(type_a)
+
+    # Type C: correction accuracy
+    type_c = results.get("C", [])
+    if type_c:
+        exact = sum(r["exact_match"] for r in type_c)
+        # Extract correction from pred and check if right part matches target
+        correction_correct = 0
+        for r in type_c:
+            _, pred_right = extract_correction(r["pred"])
+            if pred_right == r["target_word"]:
+                correction_correct += 1
+
+        metrics["C_exact_match"] = exact / len(type_c)
+        metrics["C_correction_acc"] = correction_correct / len(type_c)
+        metrics["C_count"] = len(type_c)
+
+    # Type D: NL accuracy
+    type_d = results.get("D", [])
+    if type_d:
+        exact = sum(r["exact_match"] for r in type_d)
+        metrics["D_exact_match"] = exact / len(type_d)
+        metrics["D_count"] = len(type_d)
+
+    return metrics
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Evaluate BCI correction model")
+    parser.add_argument("--data_dir", type=str, default="data/correction")
+    parser.add_argument("--checkpoint", type=str, default="output/correction/final")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-4B-Instruct-2507")
+    parser.add_argument("--from_modelscope", action="store_true", default=True)
+    parser.add_argument("--run_base", action="store_true",
+                        help="Also run base model (zero-shot)")
+    parser.add_argument("--split", type=str, default="val")
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    data_path = Path(args.data_dir) / f"{args.split}.jsonl"
+
+    # Load base model
+    if args.from_modelscope:
+        from modelscope import snapshot_download
+        model_path = snapshot_download(args.model_name)
+    else:
+        model_path = args.model_name
+
+    print(f"Loading base model from {model_path}...")
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path, trust_remote_code=True, padding_side="left",
+    )
+
+    # Run base model (zero-shot) if requested
+    if args.run_base:
+        print("\n=== Base Model (Zero-Shot) ===")
+        base_model = AutoModelForCausalLM.from_pretrained(
+            model_path, torch_dtype=torch.bfloat16,
+            trust_remote_code=True, low_cpu_mem_usage=True,
+        ).to(device)
+        base_results = run_generation(base_model, tokenizer, data_path, device)
+        del base_model
+        torch.cuda.empty_cache()
+
+        base_metrics = compute_metrics(base_results)
+        print("\nBase model results:")
+        for k, v in base_metrics.items():
+            print(f"  {k}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")
+
+    # Run fine-tuned model
+    ckpt_dir = Path(args.checkpoint)
+    if ckpt_dir.exists():
+        print(f"\n=== Fine-tuned Model ({args.checkpoint}) ===")
+        ft_model = AutoModelForCausalLM.from_pretrained(
+            model_path, torch_dtype=torch.bfloat16,
+            trust_remote_code=True, low_cpu_mem_usage=True,
+        )
+        if (ckpt_dir / "adapter_config.json").exists():
+            ft_model = PeftModel.from_pretrained(ft_model, str(ckpt_dir))
+        ft_model = ft_model.to(device)
+
+        ft_results = run_generation(ft_model, tokenizer, data_path, device)
+        ft_metrics = compute_metrics(ft_results)
+
+        print("\nFine-tuned model results:")
+        for k, v in ft_metrics.items():
+            print(f"  {k}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")
+
+        # Save
+        out_path = ckpt_dir / f"results_{args.split}.json"
+        with open(out_path, "w") as f:
+            json.dump({"metrics": ft_metrics}, f, ensure_ascii=False, indent=2)
+        print(f"\nResults saved to {out_path}")
+    else:
+        print(f"Checkpoint not found: {ckpt_dir}")
+
+
+if __name__ == "__main__":
+    main()
