@@ -106,7 +106,7 @@ def run_generation(model, tokenizer, data_path, device, max_new_tokens=80,
         inputs = tokenizer(
             batch_prompts, return_tensors="pt", padding=True, truncation=True,
         ).to(device)
-        prompt_lens = [inputs["attention_mask"][j].sum().item() for j in range(len(batch_prompts))]
+        input_len = inputs["input_ids"].shape[1]  # padded length (same for all)
 
         with torch.no_grad():
             output_ids = model.generate(
@@ -119,7 +119,7 @@ def run_generation(model, tokenizer, data_path, device, max_new_tokens=80,
             )
 
         for j, sample in enumerate(batch_samples):
-            new_tokens = output_ids[j][prompt_lens[j]:]
+            new_tokens = output_ids[j][input_len:]
             pred = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
             target = sample["messages"][2]["content"]
             dtype = sample.get("type", "A")
