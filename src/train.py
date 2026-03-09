@@ -90,9 +90,10 @@ class BCITrainer(Trainer):
                 torch.load(proj_path, map_location="cpu", weights_only=True)
             )
 
-        # Load LoRA adapter
+        # Load LoRA adapter (load to CPU first to avoid DDP OOM)
         if isinstance(self.model.qwen, PeftModel) and (Path(best_path) / "adapter_config.json").exists():
-            self.model.qwen.load_adapter(str(best_path), adapter_name="default", is_trainable=True)
+            self.model.qwen.load_adapter(str(best_path), adapter_name="default",
+                                         is_trainable=True, torch_device="cpu")
 
         # Load new token embeddings (S1 without modules_to_save)
         qwen_path = Path(best_path) / "qwen_trainable.pt"

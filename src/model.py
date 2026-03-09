@@ -278,11 +278,25 @@ def build_model(
         lora_config = LoraConfig(
             r=lora_rank, lora_alpha=lora_alpha, lora_dropout=lora_dropout,
             target_modules=list(lora_target_modules),
-            modules_to_save=["embed_tokens", "lm_head"],
             task_type="CAUSAL_LM", bias="none",
         )
         qwen_model = get_peft_model(qwen_model, lora_config)
+
+        # Train only new BCI token embeddings (same as S1)
+        embed_weight = qwen_model.get_input_embeddings().weight
+        embed_weight.requires_grad_(True)
+        def _mask_original_grad(grad):
+            grad[:original_vocab_size] = 0
+            return grad
+        embed_weight.register_hook(_mask_original_grad)
+
+        if not getattr(qwen_model.config, "tie_word_embeddings", True):
+            lm_weight = qwen_model.lm_head.weight
+            lm_weight.requires_grad_(True)
+            lm_weight.register_hook(_mask_original_grad)
+
         qwen_model.print_trainable_parameters()
+        print(f"Stage 2: LoRA rank={lora_rank} + {num_new} new tokens (gradient hook)")
 
     # Build projector
     projector = EEGProjector(reve_dim=reve_dim, qwen_dim=llm_dim)
