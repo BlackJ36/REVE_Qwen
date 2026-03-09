@@ -156,18 +156,34 @@ def compute_metrics(results):
     # Type A: spelling accuracy
     type_a = results.get("A", [])
     if type_a:
+        # Clean pred: strip any correction template text that leaked into Type A
+        correction_markers = [
+            " 可能你想输入的是", " 你是不是想拼", " 自动纠正为",
+            " 这看起来像是", " 检测到可能的拼写错误",
+        ]
+        def clean_type_a_pred(pred):
+            for marker in correction_markers:
+                idx = pred.find(marker)
+                if idx >= 0:
+                    pred = pred[:idx]
+            return pred.strip()
+
         exact = sum(r["exact_match"] for r in type_a)
         # Character accuracy: 1 - (edit_distance / target_length)
         char_total = 0
         total_ed = 0
+        exact_clean = 0
         for r in type_a:
             target = r["target_word"]
-            pred = r["pred"]
+            pred = clean_type_a_pred(r["pred"])
+            if pred == target:
+                exact_clean += 1
             ed = edit_distance(pred, target)
             total_ed += ed
             char_total += len(target)
 
-        metrics["A_word_acc"] = exact / len(type_a)
+        metrics["A_word_acc"] = exact_clean / len(type_a)
+        metrics["A_word_acc_raw"] = exact / len(type_a)
         metrics["A_char_acc"] = 1.0 - total_ed / max(char_total, 1)
         metrics["A_avg_ed"] = total_ed / len(type_a)
         metrics["A_count"] = len(type_a)
