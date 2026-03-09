@@ -109,7 +109,7 @@ NL_DIALOGUES = [
 ]
 
 
-def load_fbcca_data(eeg_dir, split, decoder_type="fbcca"):
+def load_fbcca_data(eeg_dir, split, decoder_type="fbcca", decoder_pts=None):
     """Load EEG labels + precomputed decoder results."""
     eeg_dir = Path(eeg_dir)
 
@@ -118,7 +118,12 @@ def load_fbcca_data(eeg_dir, split, decoder_type="fbcca"):
     subject_ids = eeg_data["subject_ids"]
     block_ids = eeg_data["block_ids"]
 
-    cand_data = torch.load(eeg_dir / f"{split}_{decoder_type}.pt",
+    # e.g. val_fbcca_200pt.pt for 1s data
+    if decoder_pts:
+        fname = f"{split}_{decoder_type}_{decoder_pts}pt.pt"
+    else:
+        fname = f"{split}_{decoder_type}.pt"
+    cand_data = torch.load(eeg_dir / fname,
                            map_location="cpu", weights_only=True)
     top3_indices = cand_data["top3_indices"]  # (N, num_offsets, 3)
     top3_scores = cand_data["top3_scores"]    # (N, num_offsets, 3)
@@ -327,6 +332,8 @@ def main():
     parser.add_argument("--output_dir", type=str, default="data/correction")
     parser.add_argument("--decoder_type", type=str, default="fbcca",
                         choices=["fbcca", "trca", "etrca"])
+    parser.add_argument("--decoder_pts", type=int, default=200,
+                        help="Timepoints for decoder (200=1s, None=full)")
     parser.add_argument("--n_type_a", type=int, default=5000)
     parser.add_argument("--n_type_c", type=int, default=2500)
     parser.add_argument("--n_type_d", type=int, default=2500)
@@ -337,10 +344,11 @@ def main():
     random.seed(args.seed)
 
     # Load FBCCA data: train subjects for training, val subjects for evaluation
+    pts = args.decoder_pts if args.decoder_pts > 0 else None
     train_labels, train_groups, train_t3i, train_t3s = load_fbcca_data(
-        args.eeg_dir, "train", args.decoder_type)
+        args.eeg_dir, "train", args.decoder_type, pts)
     val_labels, val_groups, val_t3i, val_t3s = load_fbcca_data(
-        args.eeg_dir, "val", args.decoder_type)
+        args.eeg_dir, "val", args.decoder_type, pts)
 
     # Load corpus
     with open(args.corpus) as f:
