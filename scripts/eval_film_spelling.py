@@ -21,7 +21,10 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
 import torch
+
+SEEDS = [42, 123, 456]
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -128,6 +131,23 @@ def compute_word_metrics(top3, labels, subject_ids, block_ids,
     }
 
 
+def multi_seed_word_metrics(metric_fn, *args, **kwargs):
+    """Run word-level metrics with multiple seeds and return mean ± std."""
+    all_runs = []
+    for seed in SEEDS:
+        wm = metric_fn(*args, seed=seed, **kwargs)
+        all_runs.append(wm)
+    avg = {}
+    for key in ["word_acc", "char_acc", "avg_ed"]:
+        vals = [r[key] for r in all_runs]
+        avg[key] = float(np.mean(vals))
+        avg[f"{key}_std"] = float(np.std(vals))
+    avg["n_words"] = all_runs[0]["n_words"]
+    avg["avg_word_len"] = all_runs[0].get("avg_word_len", 0)
+    avg["n_seeds"] = len(SEEDS)
+    return avg
+
+
 def run_checkpoint(ckpt_path, config_path, eeg_dir, corpus_words,
                    device, batch_size=256):
     """Load checkpoint, run inference, compute metrics."""
@@ -197,13 +217,15 @@ def run_checkpoint(ckpt_path, config_path, eeg_dir, corpus_words,
         subject_ids = subject_ids[mask]
         block_ids = block_ids[mask]
 
-    # Word-level metrics
-    print("\nComputing word-level spelling metrics...")
-    wm = compute_word_metrics(top3, labels, subject_ids, block_ids, corpus_words)
+    # Word-level metrics (multi-seed averaging)
+    print(f"\nComputing word-level spelling metrics ({len(SEEDS)} seeds)...")
+    wm = multi_seed_word_metrics(
+        compute_word_metrics, top3, labels, subject_ids, block_ids, corpus_words)
 
     print(f"\n  FiLM {dur_s:.0f}s: trial={top1_acc:.1%}, "
-          f"word={wm['word_acc']:.1%}, char={wm['char_acc']:.1%}, "
-          f"ed={wm['avg_ed']:.2f}")
+          f"word={wm['word_acc']:.1%}±{wm['word_acc_std']:.1%}, "
+          f"char={wm['char_acc']:.1%}±{wm['char_acc_std']:.1%}, "
+          f"ed={wm['avg_ed']:.2f}±{wm['avg_ed_std']:.2f}")
 
     del model
     torch.cuda.empty_cache()
@@ -257,16 +279,21 @@ def main():
         results.append(r2)
 
     # Summary table
-    print(f"\n{'='*70}")
+    print(f"\n(Word metrics averaged over {len(SEEDS)} seeds: {SEEDS})")
+    print(f"{'='*90}")
     print(f"{'Method':>15} {'Duration':>8} | {'Trial':>6} {'Top3':>6} | "
-          f"{'Word':>6} {'Char':>6} {'AvgED':>6}")
-    print(f"{'-'*70}")
+          f"{'Word Acc':>14} {'Char Acc':>14} {'Avg ED':>12}")
+    print(f"{'-'*90}")
     for r in results:
+        w_std = r.get('word_acc_std', 0)
+        c_std = r.get('char_acc_std', 0)
+        e_std = r.get('avg_ed_std', 0)
         print(f"  {'FiLM':>13} {r['duration_s']:>5.0f}s    | "
               f"{r['trial_acc']:>5.1%} {r['trial_top3']:>5.1%} | "
-              f"{r['word_acc']:>5.1%} {r['char_acc']:>5.1%} "
-              f"{r['avg_ed']:>5.2f}")
-    print(f"{'='*70}")
+              f"{r['word_acc']:>5.1%}±{w_std:.1%} "
+              f"{r['char_acc']:>5.1%}±{c_std:.1%} "
+              f"{r['avg_ed']:>5.2f}±{e_std:.2f}")
+    print(f"{'='*90}")
 
 
 if __name__ == "__main__":

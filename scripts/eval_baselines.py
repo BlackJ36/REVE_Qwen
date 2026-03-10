@@ -11,10 +11,14 @@ Usage:
 
 import argparse
 import json
+import math
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
 import torch
+
+SEEDS = [42, 123, 456]
 
 
 KEYBOARD_CHARS = [
@@ -53,71 +57,21 @@ def compute_trial_acc(top3_indices, labels, offset=0):
     return top1_acc, top3_acc
 
 
-def compute_word_metrics_from_precomputed(eeg_dir, split, decoder_name, labels, subject_ids,
-                                          block_ids, corpus_words, n_words=1000, seed=42):
-    """Build words from precomputed decoder and compute word/char metrics."""
-    import random
-    rng = random.Random(seed)
 
-    eeg_dir = Path(eeg_dir)
-    cand_data = torch.load(eeg_dir / f"{split}_{decoder_name}.pt",
-                           map_location="cpu", weights_only=True)
-    top3_indices = cand_data["top3_indices"]
-
-    # Group by (subject, block) → label → trial indices
-    CHAR_TO_LABEL = {ch: i for i, ch in enumerate(KEYBOARD_CHARS)}
-    groups = defaultdict(lambda: defaultdict(list))
-    for idx in range(len(labels)):
-        key = (int(subject_ids[idx]), int(block_ids[idx]))
-        label = int(labels[idx])
-        groups[key][label].append(idx)
-
-    results = []
-    for _ in range(n_words * 3):
-        if len(results) >= n_words:
-            break
-        word = rng.choice(corpus_words)
-        label_indices = [CHAR_TO_LABEL.get(c) for c in word]
-        if None in label_indices:
-            continue
-
-        # Find a group with all labels
-        group_keys = list(groups.keys())
-        rng.shuffle(group_keys)
-        found = False
-        for gk in group_keys:
-            if all(len(groups[gk].get(l, [])) > 0 for l in label_indices):
-                # Decode each char
-                decoded = []
-                for l in label_indices:
-                    tidx = rng.choice(groups[gk][l])
-                    pred_label = int(top3_indices[tidx, 0, 0])
-                    decoded.append(KEYBOARD_CHARS[pred_label])
-                noisy = "".join(decoded)
-                results.append({"target": word, "noisy": noisy})
-                found = True
-                break
-
-    # Metrics
-    n = len(results)
-    word_correct = sum(1 for r in results if r["noisy"] == r["target"])
-    char_correct = 0
-    char_total = 0
-    total_ed = 0
-    for r in results:
-        noisy, target = r["noisy"], r["target"]
-        for j in range(min(len(noisy), len(target))):
-            if noisy[j] == target[j]:
-                char_correct += 1
-        char_total += len(target)
-        total_ed += edit_distance(noisy, target)
-
-    return {
-        "n_words": n,
-        "word_acc": word_correct / max(n, 1),
-        "char_acc": char_correct / max(char_total, 1),
-        "avg_ed": total_ed / max(n, 1),
-    }
+def multi_seed_word_metrics(metric_fn, *args, **kwargs):
+    """Run word-level metrics with multiple seeds and return mean ± std."""
+    all_runs = []
+    for seed in SEEDS:
+        wm = metric_fn(*args, seed=seed, **kwargs)
+        all_runs.append(wm)
+    avg = {}
+    for key in ["word_acc", "char_acc", "avg_ed"]:
+        vals = [r[key] for r in all_runs]
+        avg[key] = float(np.mean(vals))
+        avg[f"{key}_std"] = float(np.std(vals))
+    avg["n_words"] = all_runs[0]["n_words"]
+    avg["n_seeds"] = len(SEEDS)
+    return avg
 
 
 def compute_cca_from_eeg(eeg_dir, split, n_timepoints=200):
@@ -188,13 +142,10 @@ def compute_cca_from_eeg(eeg_dir, split, n_timepoints=200):
     }
 
 
-def compute_cca_word_metrics(eeg_dir, split, n_timepoints, labels, subject_ids,
-                             block_ids, corpus_words, n_words=1000, seed=42):
-    """Compute CCA (single-band) top-3 from raw EEG and then word-level metrics."""
-    import random
+def compute_cca_top3(eeg_dir, split, n_timepoints):
+    """Compute CCA (single-band) top-3 from raw EEG. Returns (N, 3) indices."""
     from src.fbcca import FBCCAFeatureExtractor, OCCIPITAL_CHANNELS
 
-    rng = random.Random(seed)
     eeg_dir = Path(eeg_dir)
     eeg_data = torch.load(eeg_dir / f"{split}_eeg.pt", map_location="cpu", weights_only=True)
     eeg = eeg_data["eeg_data"]
@@ -223,13 +174,15 @@ def compute_cca_word_metrics(eeg_dir, split, n_timepoints, labels, subject_ids,
         top3 = cca_scores.topk(3, dim=1).indices.cpu()
         all_cca_top3.append(top3)
 
-    cca_top3 = torch.cat(all_cca_top3, dim=0)  # (N, 3)
+    return torch.cat(all_cca_top3, dim=0)  # (N, 3)
 
-    # Per-trial accuracy
-    top1_acc = (cca_top3[:, 0] == labels).float().mean().item()
-    top3_acc = (cca_top3 == labels.unsqueeze(1)).any(dim=1).float().mean().item()
 
-    # Word-level: reuse same logic as compute_word_metrics_from_precomputed
+def compute_word_metrics_from_top3(top3, labels, subject_ids, block_ids,
+                                   corpus_words, n_words=1000, seed=42):
+    """Compute word-level spelling metrics from top-3 prediction tensor (N, 3)."""
+    import random
+    rng = random.Random(seed)
+
     CHAR_TO_LABEL = {ch: i for i, ch in enumerate(KEYBOARD_CHARS)}
     groups = defaultdict(lambda: defaultdict(list))
     for idx in range(len(labels)):
@@ -251,26 +204,20 @@ def compute_cca_word_metrics(eeg_dir, split, n_timepoints, labels, subject_ids,
                 decoded = []
                 for l in label_indices:
                     tidx = rng.choice(groups[gk][l])
-                    pred_label = int(cca_top3[tidx, 0])
+                    pred_label = int(top3[tidx, 0])
                     decoded.append(KEYBOARD_CHARS[pred_label])
                 results.append({"target": word, "noisy": "".join(decoded)})
                 break
 
     n = len(results)
     word_correct = sum(1 for r in results if r["noisy"] == r["target"])
-    char_correct = sum(
-        sum(1 for a, b in zip(r["noisy"], r["target"]) if a == b)
-        for r in results
-    )
     char_total = sum(len(r["target"]) for r in results)
     total_ed = sum(edit_distance(r["noisy"], r["target"]) for r in results)
 
     return {
-        "top1": top1_acc,
-        "top3": top3_acc,
         "n_words": n,
         "word_acc": word_correct / max(n, 1),
-        "char_acc": char_correct / max(char_total, 1),
+        "char_acc": 1.0 - total_ed / max(char_total, 1),
         "avg_ed": total_ed / max(n, 1),
     }
 
@@ -310,9 +257,10 @@ def main():
         if fbcca_path.exists():
             cand = torch.load(fbcca_path, map_location="cpu", weights_only=True)
             top1, top3 = compute_trial_acc(cand["top3_indices"], labels)
-            wm = compute_word_metrics_from_precomputed(
-                args.eeg_dir, split, f"fbcca{pts_suffix}", labels,
-                subject_ids, block_ids, words)
+            fbcca_top3 = cand["top3_indices"][:, 0, :]  # (N, 3)
+            wm = multi_seed_word_metrics(
+                compute_word_metrics_from_top3,
+                fbcca_top3, labels, subject_ids, block_ids, words)
             all_results[("FBCCA", pts)] = {
                 "top1": top1, "top3": top3, **wm}
 
@@ -321,21 +269,24 @@ def main():
         if etrca_path.exists():
             cand = torch.load(etrca_path, map_location="cpu", weights_only=True)
             top1, top3 = compute_trial_acc(cand["top3_indices"], labels)
-            wm = compute_word_metrics_from_precomputed(
-                args.eeg_dir, split, f"etrca{pts_suffix}", labels,
-                subject_ids, block_ids, words)
+            etrca_top3 = cand["top3_indices"][:, 0, :]  # (N, 3)
+            wm = multi_seed_word_metrics(
+                compute_word_metrics_from_top3,
+                etrca_top3, labels, subject_ids, block_ids, words)
             all_results[("eTRCA", pts)] = {
                 "top1": top1, "top3": top3, **wm}
 
         # CCA (from raw EEG)
         print(f"Computing CCA {dur_s:.0f}s ({pts}pts) from raw EEG...")
-        cca = compute_cca_word_metrics(
-            args.eeg_dir, split, pts, labels, subject_ids, block_ids, words)
-        all_results[("CCA", pts)] = cca
+        cca_top3 = compute_cca_top3(args.eeg_dir, split, pts)
+        top1 = (cca_top3[:, 0] == labels).float().mean().item()
+        top3_acc = (cca_top3 == labels.unsqueeze(1)).any(dim=1).float().mean().item()
+        wm = multi_seed_word_metrics(
+            compute_word_metrics_from_top3,
+            cca_top3, labels, subject_ids, block_ids, words)
+        all_results[("CCA", pts)] = {"top1": top1, "top3": top3_acc, **wm}
 
     # ─── ITR calculation ───
-    import math
-
     def compute_itr(n_classes, accuracy, trial_time_s, gaze_shift_s=0.5):
         """Compute ITR in bits/min (Wolpaw formula)."""
         P = min(max(accuracy, 1e-6), 1 - 1e-6)
@@ -346,10 +297,11 @@ def main():
 
     # ─── Print table ───
     print()
-    print("=" * 90)
+    print(f"(Word metrics averaged over {len(SEEDS)} seeds: {SEEDS})")
+    print("=" * 110)
     print(f"{'Decoder':>10} {'Duration':>8} │ {'Top1':>6} {'Top3':>6} {'ITR':>7} │ "
-          f"{'Word':>6} {'Char':>6} {'AvgED':>6}")
-    print("─" * 90)
+          f"{'Word Acc':>14} {'Char Acc':>14} {'Avg ED':>12}")
+    print("─" * 110)
 
     for pts in args.decoder_pts:
         dur_s = pts / 200
@@ -359,11 +311,15 @@ def main():
                 continue
             r = all_results[key]
             itr = compute_itr(40, r['top1'], dur_s)
+            w_std = r.get('word_acc_std', 0)
+            c_std = r.get('char_acc_std', 0)
+            e_std = r.get('avg_ed_std', 0)
             print(f"  {decoder:>8} {dur_s:>5.0f}s    │ "
                   f"{r['top1']:>5.1%} {r['top3']:>5.1%} {itr:>5.1f}   │ "
-                  f"{r['word_acc']:>5.1%} {r['char_acc']:>5.1%} "
-                  f"{r['avg_ed']:>5.2f}")
-        print("─" * 90)
+                  f"{r['word_acc']:>5.1%}±{w_std:.1%} "
+                  f"{r['char_acc']:>5.1%}±{c_std:.1%} "
+                  f"{r['avg_ed']:>5.2f}±{e_std:.2f}")
+        print("─" * 110)
 
     print()
 
