@@ -302,7 +302,8 @@ def main():
 
     for pts in args.decoder_pts:
         dur_s = pts / 200
-        pts_suffix = f"_{pts}pt"
+        # 600pt files use no suffix (backward compat), others use _{N}pt
+        pts_suffix = "" if pts == 600 else f"_{pts}pt"
 
         # FBCCA
         fbcca_path = eeg_dir / f"{split}_fbcca{pts_suffix}.pt"
@@ -332,12 +333,23 @@ def main():
             args.eeg_dir, split, pts, labels, subject_ids, block_ids, words)
         all_results[("CCA", pts)] = cca
 
+    # ─── ITR calculation ───
+    import math
+
+    def compute_itr(n_classes, accuracy, trial_time_s, gaze_shift_s=0.5):
+        """Compute ITR in bits/min (Wolpaw formula)."""
+        P = min(max(accuracy, 1e-6), 1 - 1e-6)
+        N = n_classes
+        bits_per_trial = (math.log2(N) + P * math.log2(P)
+                          + (1 - P) * math.log2((1 - P) / (N - 1)))
+        return bits_per_trial / (trial_time_s + gaze_shift_s) * 60
+
     # ─── Print table ───
     print()
-    print("=" * 80)
-    print(f"{'Decoder':>10} {'Duration':>8} │ {'Trial':>6} {'Top1':>6} {'Top3':>6} │ "
-          f"{'Word':>6} {'Acc':>6} {'Char':>6} {'Acc':>6} {'AvgED':>6}")
-    print("─" * 80)
+    print("=" * 90)
+    print(f"{'Decoder':>10} {'Duration':>8} │ {'Top1':>6} {'Top3':>6} {'ITR':>7} │ "
+          f"{'Word':>6} {'Char':>6} {'AvgED':>6}")
+    print("─" * 90)
 
     for pts in args.decoder_pts:
         dur_s = pts / 200
@@ -346,11 +358,12 @@ def main():
             if key not in all_results:
                 continue
             r = all_results[key]
+            itr = compute_itr(40, r['top1'], dur_s)
             print(f"  {decoder:>8} {dur_s:>5.0f}s    │ "
-                  f"top1={r['top1']:>5.1%} top3={r['top3']:>5.1%} │ "
-                  f"word={r['word_acc']:>5.1%} char={r['char_acc']:>5.1%} "
-                  f"ed={r['avg_ed']:>5.2f}")
-        print("─" * 80)
+                  f"{r['top1']:>5.1%} {r['top3']:>5.1%} {itr:>5.1f}   │ "
+                  f"{r['word_acc']:>5.1%} {r['char_acc']:>5.1%} "
+                  f"{r['avg_ed']:>5.2f}")
+        print("─" * 90)
 
     print()
 
