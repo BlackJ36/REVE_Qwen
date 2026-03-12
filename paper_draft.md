@@ -224,9 +224,39 @@ We evaluate on two publicly available SSVEP-BCI datasets:
 
 **BETA Dataset [18].** 70 subjects (S01--S70), 64 EEG channels at 250 Hz, 40 targets with 4 blocks per subject. Trial durations vary: S01--S15 have 3.0 s trials (500 timepoints after resampling, zero-padded to 600), S16--S70 have 4.0 s trials (700 timepoints, truncated to 600).
 
-**Train/Val split:** Training uses 90 subjects (BM S01--S30 + BETA S01--S60); validation uses 15 subjects (BM S31--S35 + BETA S61--S70). This split ensures zero overlap between training and evaluation subjects.
-
 **Preprocessing.** After removing 2 electrodes (CB1, CB2) not in the electrode position bank, 62 channels are retained. All data undergoes 3--90 Hz bandpass filtering, 50 Hz notch filtering, and resampling to 200 Hz. The 0.5 s visual cue period (125 samples at 250 Hz) is removed before resampling.
+
+**Subject exclusion.** Five BETA subjects with near-random FBCCA accuracy (<30%): S11, S41, S55, S59, S64 are excluded from FiLM training and evaluation. For decoder baselines (CCA/FBCCA/eTRCA), all subjects are retained to maintain comparability.
+
+**Train/Val split.** Table 0 summarizes the EEG data distribution. Training and validation use strictly separate subjects, ensuring zero overlap.
+
+**Table 0.** EEG dataset distribution. Each trial corresponds to one 40-class SSVEP target.
+
+| Dataset | Split | Subjects | Blocks/Subj | Trials/Block | Trials | Notes |
+|---------|-------|----------|-------------|-------------|--------|-------|
+| Benchmark | Train | S01--S30 (30) | 6 | 40 | 7,200 | |
+| Benchmark | Val | S31--S35 (5) | 6 | 40 | 1,200 | |
+| BETA | Train | S01--S60 (60) | 4 | 40 | 9,600 | Incl. 4 BAD subj |
+| BETA | Val | S61--S70 (10) | 4 | 40 | 1,600 | Incl. 1 BAD subj (S64) |
+| **Total** | **Train** | **90** | | | **16,800** | |
+| **Total** | **Val** | **15** | | | **2,800** (2,640†) | |
+
+*†After excluding BAD subject S64 (160 trials) from BETA val.*
+
+#### LLM Correction Training Data
+
+Table 0b summarizes the LLM correction data, constructed from real FBCCA decoder outputs of the corresponding subject pools.
+
+**Table 0b.** LLM correction data distribution. V1 = long words only; V2 = 30% short words (2--8 chars) mixed in. All models trained on V1.
+
+| Version | Ratio (A/C/D) | Avg Word Len | Train | Val | FBCCA Duration |
+|---------|---------------|-------------|-------|-----|----------------|
+| V1 1s | 50/25/25% | ~19 chars | 10,000 | 2,000 | 1.0 s (200 pts) |
+| V1 2s | 50/25/25% | ~19 chars | 10,000 | 2,000 | 2.0 s (400 pts) |
+| V2 1s | 70/20/10% | ~15 chars | 10,000 | 2,000 | 1.0 s (200 pts) |
+| V2 2s | 70/20/10% | ~15 chars | 10,000 | 2,000 | 2.0 s (400 pts) |
+
+Type A = spelling correction, Type C = error detection + correction, Type D = natural language dialogue. V2 val data is used for 3-seed evaluation only; models are trained on V1 data.
 
 ### 4.2 Decoder Evaluation Settings
 
