@@ -554,47 +554,74 @@ Frequency: $f = 8.0 + \text{col} \times 1.0 + \text{row} \times 0.2$ Hz
 
 ## Appendix B: Training Data Examples
 
+The following are real examples from the evaluation dataset, constructed from actual FBCCA 2s decoder outputs on validation subjects.
+
 ### Type A (Spelling Correction)
 
-```json
-{
-  "type": "A",
-  "messages": [
-    {"role": "system", "content": "你是一个脑机接口助手。用户通过注视屏幕上闪烁的字符来拼写文字。解码器会给出每个位置的候选字符及置信度。请根据候选信息和语言知识，输出解码结果。"},
-    {"role": "user", "content": "解码结果: \"HFLP\"\n候选:\n  位置1: H(0.45) G(0.30) P(0.25)\n  位置2: F(0.38) E(0.35) N(0.27)\n  位置3: L(0.52) K(0.28) T(0.20)\n  位置4: P(0.60) O(0.22) Q(0.18)"},
-    {"role": "assistant", "content": "HELP"}
-  ],
-  "target_word": "HELP",
-  "noisy_word": "HFLP"
-}
+The target word is "KEEPTHESPONGEINTHEDININGROOM" (28 chars). FBCCA decoded "KEEPTHESPO**>**GEINTHEDININGROOM" with one error at position 11 (N→>). The LLM must output the correct word using candidates and linguistic context.
+
 ```
+System: 你是一个脑机接口助手。用户通过注视屏幕上闪烁的字符来拼写文字。
+       解码器会给出每个位置的候选字符及置信度。请根据候选信息和语言知识，输出解码结果。
+
+User:   解码结果: "KEEPTHESPO>GEINTHEDININGROOM"
+        候选:
+          位置1:  K(0.40) C(0.31) S(0.29)
+          位置2:  E(0.41) A(0.32) 0(0.28)
+          ...
+          位置11: >(0.38) 6(0.32) N(0.30)   ← correct char N is rank3
+          位置12: G(0.41) O(0.33) .(0.26)
+          ...
+          位置28: M(0.38) P(0.31) L(0.31)
+
+Target:  KEEPTHESPONGEINTHEDININGROOM
+```
+
+The LLM correctly identifies that position 11's ">" (rank 1, conf 0.38) should be "N" (rank 3, conf 0.30) based on the word "SPONGE".
 
 ### Type C (Error Detection + Correction)
 
-```json
-{
-  "type": "C",
-  "messages": [
-    {"role": "system", "content": "你是一个脑机接口助手。..."},
-    {"role": "user", "content": "解码结果: \"WARER\"\n候选:\n  ..."},
-    {"role": "assistant", "content": "WARER 你是不是想拼WATER"}
-  ],
-  "target_word": "WATER"
-}
+The target word is "PLEASEGOTOTHEARMCHAIR". SSVEP confusion errors corrupt it to "PLEASEGOTOTHMARMCHAIR" (E→M at pos 13, E→nothing at pos 4). FBCCA then decodes with additional noise: "PLEASHGOTOTHMARMC1ASR".
+
+```
+System: 你是一个脑机接口助手。用户通过注视屏幕上闪烁的字符来拼写文字。
+       解码器会给出每个位置的候选字符及置信度。请根据候选信息和语言知识，输出解码结果。
+
+User:   解码结果: "PLEASHGOTOTHMARMC1ASR"
+        候选:
+          位置1:  P(0.40) X(0.30) K(0.30)
+          位置2:  L(0.37) >(0.34) Q(0.29)
+          位置3:  E(0.37) .(0.32) D(0.31)
+          位置4:  A(0.40) I(0.30) 7(0.29)
+          位置5:  S(0.43) K(0.30) L(0.27)
+          位置6:  H(0.35) J(0.33) K(0.32)   ← should be E
+          位置7:  G(0.45) 0(0.28) .(0.27)
+          ...
+          位置17: C(0.36) 6(0.33) >(0.31)
+          位置18: 1(0.34) D(0.33) 2(0.33)   ← should be H
+          ...
+          位置21: R(0.37) 2(0.32) 0(0.31)
+
+Target:  PLEASEGOTOTHMARMCHAIR 你是不是想拼PLEASEGOTOTHEARMCHAIR
 ```
 
-### Type D (Natural Language)
+The LLM must output two parts: (1) the decoded text from FBCCA candidates, and (2) a correction suggestion identifying the intended word. This teaches the model both decoding and error awareness.
 
-```json
-{
-  "type": "D",
-  "messages": [
-    {"role": "system", "content": "你是一个脑机接口助手，负责帮助用户通过脑电信号进行交流。"},
-    {"role": "user", "content": "你好"},
-    {"role": "assistant", "content": "你好！我是脑机接口助手，可以帮你通过EEG信号拼写文字。"}
-  ]
-}
+### Type D (Natural Language Dialogue)
+
+No EEG input. The model handles conversational BCI interactions.
+
 ```
+System: 你是一个脑机接口助手，负责帮助用户通过脑电信号进行交流。
+
+User:   确认发送
+
+Target: 消息已发送！
+```
+
+Other examples include: "你好" → "你好！我是脑机接口助手...", "叫护士" → "好的，我帮你发送呼叫护士的消息。", "打开灯" → "好的，发送指令：打开灯。" These preserve the model's ability to handle natural language commands in a BCI context.
+
+---
 
 ## Appendix C: Implementation Details
 
