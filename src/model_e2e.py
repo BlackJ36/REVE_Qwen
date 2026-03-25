@@ -6,8 +6,24 @@ from einops import rearrange
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModel, AutoModelForImageTextToText, AutoTokenizer
 
-from .model import EEGProjector
 from .preprocess import VALID_CHANNEL_NAMES
+
+
+class EEGProjector(nn.Module):
+    """Projects REVE channel embeddings (512d) into Qwen embedding space."""
+
+    def __init__(self, reve_dim=512, qwen_dim=2560):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Linear(reve_dim, qwen_dim // 2),
+            nn.GELU(),
+            nn.Linear(qwen_dim // 2, qwen_dim),
+            nn.LayerNorm(qwen_dim),
+        )
+
+    def forward(self, x):
+        """x: (..., 512) → (..., qwen_dim). Works for any batch dims."""
+        return self.proj(x)
 from .tokens import ALL_SPECIAL_TOKENS, BCI_PAD, register_special_tokens
 
 
