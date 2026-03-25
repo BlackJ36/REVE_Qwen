@@ -1,0 +1,231 @@
+% =====================================================================
+% 第二章修订片段 — 直接替换原 LaTeX 对应小节
+% 修正内容：通道名、数据集构造、FiLM参数、ITR公式、实验数值
+% =====================================================================
+
+
+% =====================================================================
+% 替换原 \subsection{EEG 预处理与通道选择} 中的通道描述
+% =====================================================================
+
+\subsection{EEG 预处理与通道选择}
+\label{subsec:chap2_preprocess_channel}
+
+为抑制外界噪声干扰，本文对原始 EEG 数据实施标准滤波预处理。首先应用 50\,Hz 陷波滤波器消除工频干扰，随后应用 3--90\,Hz 带通滤波器以保留 SSVEP 的基频响应及其高阶谐波成分。设原始 EEG 矩阵为 $\mathbf{X}^{\mathrm{raw}}$，则预处理过程可形式化为
+\begin{equation}
+\mathbf{X}^{\mathrm{pre}}
+=
+\mathcal{B}\bigl(\mathcal{N}(\mathbf{X}^{\mathrm{raw}};50\ \mathrm{Hz});3,90\bigr),
+\label{eq:chap2_preprocess}
+\end{equation}
+其中，$\mathcal{N}(\cdot)$ 表示陷波滤波操作，$\mathcal{B}(\cdot)$ 表示带通滤波操作。
+
+考虑到视觉神经通路存在传导延迟，在切分单试次数据时，本文从刺激开始标记 $t_0$ 处加入一段视觉延迟补偿 $\delta$。截取长度为 $T_w$ 的分析时间窗，则单试次样本可表示为
+\begin{equation}
+\mathbf{X}_{\mathrm{epoch}}
+=
+\mathbf{X}^{\mathrm{pre}}
+\bigl[:,\, t_0+\delta f_s : t_0+(\delta+T_w)f_s \bigr],
+\label{eq:chap2_epoch}
+\end{equation}
+其中，$f_s$ 为采样率。本文实验考虑 $T_w\in\{1.0\,\mathrm{s},2.0\,\mathrm{s},3.0\,\mathrm{s}\}$ 三种设置，其中 1.0\,s 和 2.0\,s 为主要短窗评估场景。
+
+在空间维度上，SSVEP 响应主要集中于枕叶与顶枕叶区域。为降低非视觉相关通道带来的噪声与冗余，本文仅选取 9 个视觉相关通道 $O_z$, $O_1$, $O_2$, $PO_z$, $PO_3$, $PO_4$, $PO_7$, $PO_8$, $P_z$ 参与后续解码运算。核心实验参数汇总如表~\ref{ta:chap2_params} 所示。
+
+\begin{table}[htbp]
+\bicaption{脑电数据预处理与实验参数设置}{EEG data preprocessing and experimental parameter settings}
+\label{ta:chap2_params}
+\renewcommand{\arraystretch}{1.8}
+\centering
+\setlength{\tabcolsep}{6mm}{
+\begin{tabular}{cc}
+\toprule
+\textbf{参数项} & \textbf{数值或说明} \\
+\midrule
+通道数 $C$ & 9（$O_z, O_1, O_2, PO_z, PO_3, PO_4, PO_7, PO_8, P_z$） \\
+采样率 $f_s$ & 200\,Hz \\
+带通范围 & 3--90\,Hz \\
+陷波频率 & 50\,Hz \\
+视觉延迟 $\delta$ & 0.14\,s \\
+分析窗口长度 $T_w$ & 1.0\,s / 2.0\,s / 3.0\,s \\
+离线测试数据集 & Benchmark，BETA \\
+语言模型微调样本规模 & 10,000 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+
+% =====================================================================
+% 替换原 \subsection{数据集构造与任务划分} — 完整重写
+% =====================================================================
+
+\subsection{数据集构造与任务划分}
+\label{subsec:chap2_sample_construction}
+
+本章实验包含两部分。第一部分为单试次字符级分类评估，用于比较不同底层解码器的识别性能。第二部分为基于合成序列的自然语言连续拼写评估，用于验证后训练语言模型对带噪文本的恢复能力。
+
+为使语言模型学习脑机带噪文本的恢复规律，本文构建了基于真实 FBCCA 解码输出的监督微调数据集。训练数据与评估数据在被试层面严格分离，并分别采用不同的样本构造策略。
+
+\subsubsection{训练数据构造}
+
+训练集从训练被试池（Benchmark S01--S30 + BETA S01--S60）的真实 FBCCA Top-$K$ 输出中采样构建，共生成 10,000 条样本。为全面覆盖语言模型在脑机交互中需要具备的多维能力，训练样本划分为以下三类任务，采用 50\%/25\%/25\% 的比例混合。
+
+\paragraph{Type~A：隐式文本恢复（占比 50\%）}
+该类型模拟脑机拼写器的核心使用场景。模型输入包含 FBCCA 的 Top-1 解码序列以及各字符位置的 Top-3 候选与归一化置信度，要求模型直接输出修正后的目标单词或短指令。
+
+以目标单词 ``GETTINGCALM'' 为例。FBCCA 在第 5 个位置将字母 I 误判为数字 0，输出带噪序列 ``GETT0NGCALM''，同时给出各位置的候选分布：
+
+\begin{quote}
+\small
+\texttt{位置1: G(0.41) .(0.30) 2(0.28)} \\
+\texttt{位置2: E(0.37) .(0.32) D(0.31)} \\
+\texttt{...} \\
+\texttt{位置5: 0(0.36) I(0.34) 8(0.30)  $\leftarrow$ 正确字符 I 在第 2 候选} \\
+\texttt{...} \\
+\texttt{位置11: M(0.42) E(0.30) U(0.28)}
+\end{quote}
+
+模型的期望输出为 ``GETTINGCALM''。该类型训练模型利用候选分布中的局部不确定性信息，结合全局语言上下文完成联合纠偏。
+
+\paragraph{Type~C：显式错误检测与纠正建议（占比 25\%）}
+该类型在 Type~A 的基础上进一步要求模型给出显式的纠正解释。与 Type~A 不同，Type~C 的输入序列经过了额外的 SSVEP 混淆错误注入，模拟更为严重的解码错误场景。错误注入遵循 SSVEP 的物理混淆规律：60\% 为频率邻近替换（$5\times 8$ 网格上的相邻刺激目标），15\% 为字符丢失，10\% 为字符重复，15\% 为随机替换。
+
+以目标指令 ``GOTOTHESOFA'' 为例。首先通过混淆模型将部分字符替换为邻近目标，生成 ``GOTPTHESOFA''（第 4 位 O$\rightarrow$P）。随后 FBCCA 在此基础上引入额外解码噪声，产生最终输入序列 ``GWTPTHESWFA''。模型的期望输出为：
+
+\begin{quote}
+\small
+\texttt{GOTPTHESOFA 检测到可能的拼写错误 建议修正为GOTOTHESOFA}
+\end{quote}
+
+即模型需要首先从带噪候选中恢复出经混淆后的中间序列，然后进一步识别其中的拼写错误并给出修正建议。该类型旨在培养模型对错误模式的显式归因能力。
+
+\paragraph{Type~D：通用自然语言对话（占比 25\%）}
+该类型不涉及 EEG 信号输入，而是引入脑机交互场景下的常规对话指令。示例包括：
+
+\begin{quote}
+\small
+\texttt{用户：叫护士} $\rightarrow$ \texttt{助手：好的，我帮你发送呼叫护士的消息。} \\
+\texttt{用户：打开灯} $\rightarrow$ \texttt{助手：好的，发送指令：打开灯。} \\
+\texttt{用户：我不舒服} $\rightarrow$ \texttt{助手：请告诉我具体哪里不舒服，我帮你拼写给医护人员。}
+\end{quote}
+
+Type~D 的设计目的有两个方面：一是缓解 LoRA 微调过程中可能出现的灾难性遗忘，保持基座模型原有的通用语言能力；二是覆盖脑控机器人场景中用户可能发出的非拼写类交互请求，确保系统在实际部署中具备完整的对话能力。
+
+\subsubsection{评估数据构造}
+
+评估集从验证被试池（Benchmark S31--S35 + BETA S61--S70）的真实 FBCCA 输出中独立采样构建，共生成 2,000 条样本。与训练集不同，评估集采用 70\%/20\%/10\% 的类型比例（Type~A 1,400 条、Type~C 400 条、Type~D 200 条），并混入约 30\% 的短词样本（2--8 个字符），使平均词长由训练集的约 19 个字符缩短至约 15 个字符。此设计旨在覆盖更多元的词长分布，评估模型在不同语义上下文丰度条件下的恢复能力。
+
+为量化采样随机性对评估结果的影响，评估阶段采用 3 组不同随机种子（seed = 42, 123, 456）独立生成评估集并分别推理，所有报告结果均以均值 $\pm$ 标准差形式呈现。
+
+训练集与评估集的详细构成对比如表~\ref{ta:chap2_data_construction} 所示。
+
+\begin{table}[htbp]
+\bicaption{语言模型训练集与评估集构成对比}
+        {Comparison of LLM training and evaluation data composition}
+\label{ta:chap2_data_construction}
+\renewcommand{\arraystretch}{1.8}
+\centering
+\setlength{\tabcolsep}{3.5mm}{
+\begin{tabular}{cccccc}
+\toprule
+\textbf{数据集} & \textbf{样本数} & \makecell[c]{\textbf{Type A/C/D} \\ \textbf{比例}}
+  & \makecell[c]{\textbf{平均} \\ \textbf{词长}} & \makecell[c]{\textbf{短词} \\ \textbf{占比}} & \makecell[c]{\textbf{FBCCA} \\ \textbf{时长}} \\
+\midrule
+训练集 & 10,000 & 50\%/25\%/25\% & $\sim$19 字符 & $\sim$1\% & 1.0\,s / 2.0\,s \\
+评估集 & 2,000 $\times$ 3 seeds & 70\%/20\%/10\% & $\sim$15 字符 & $\sim$30\% & 1.0\,s / 2.0\,s \\
+\bottomrule
+\end{tabular}}
+\\[0.35em]
+{\small 注：训练集与评估集使用严格分离的被试池。评估集混入 30\% 短词（2--8 字符）以覆盖更多元的词长分布。}
+\end{table}
+
+
+% =====================================================================
+% 替换原 FiLM-REVE 小节最后一段 — 补全 LoRA 参数
+% =====================================================================
+
+% 【仅替换该段落】在具体实现中……
+在具体实现中，本文采用冻结参数的 REVE 模型作为 EEG 骨干网络，并在 Transformer 注意力层的投影矩阵（$W_Q$, $W_K$, $W_V$ 及 $W_O$）中引入 LoRA 模块进行参数高效微调，设置秩 $r=16$，缩放因子 $\alpha=32$。该方法不需要目标被试的校准数据，但依赖跨被试训练集学习共享表征，因此可看作介于传统免校准算法与被试内校准算法之间的一类学习型跨被试基线。
+
+
+% =====================================================================
+% 替换原 \subsection{语义级拼写评估指标} 中的 ITR_eff 定义
+% =====================================================================
+
+% 【替换从"本文进一步定义等效系统信息传输率"到公式结束的段落】
+考虑到本章同时关注纠错后的整体交互效率，本文进一步定义等效系统信息传输率（Effective ITR, $ITR_{\mathrm{eff}}$），用于衡量语义恢复后系统的整体信息吞吐效率。由于 FBCCA+LLM 方法在词级后处理后不具备直接的逐字符分类准确率，本文采用基于编辑距离的反推方法估算等效逐字符准确率：
+\begin{equation}
+P_{\mathrm{eff}}
+=
+1 - \frac{\overline{\mathrm{ED}}}{L},
+\label{eq:chap2_p_eff}
+\end{equation}
+其中，$\overline{\mathrm{ED}}$ 为平均编辑距离，$L$ 为评估集平均词长。该方法不依赖字符独立性假设，直接从编辑距离衡量信息损失。随后将 $P_{\mathrm{eff}}$ 代入式~\eqref{eq:chap2_itr}，以单次字符注视时长 $T_w$ 与注视切换时间 $T_{\mathrm{gaze}}=0.5\,\mathrm{s}$ 之和为单次交互耗时 $T$，计算等效 ITR：
+\begin{equation}
+ITR_{\mathrm{eff}}
+=
+\left[
+\log_2 N_s
++
+P_{\mathrm{eff}} \log_2 P_{\mathrm{eff}}
++
+(1-P_{\mathrm{eff}}) \log_2\frac{1-P_{\mathrm{eff}}}{N_s-1}
+\right]
+\frac{60}{T_w + T_{\mathrm{gaze}}}.
+\label{eq:chap2_itr_eff_revised}
+\end{equation}
+
+
+% =====================================================================
+% 替换表 2.4 — FBCCA+LLM 恢复性能（ITR 数值修正）
+% =====================================================================
+
+\begin{table}[htbp]
+\bicaption{FBCCA 结合大语言模型后的文本恢复性能提升}{Performance improvement of text recovery using FBCCA combined with LLM}
+\label{ta:chap2_llm_correction_results}
+\renewcommand{\arraystretch}{1.8}
+\centering
+\setlength{\tabcolsep}{4mm}{
+\begin{tabular}{ccccc}
+\toprule
+\textbf{评价指标}
+& \makecell[c]{\textbf{FBCCA} \\ \textbf{(1.0\,s)}}
+& \makecell[c]{\textbf{1.0\,s +} \\ \textbf{LLM恢复}}
+& \makecell[c]{\textbf{FBCCA} \\ \textbf{(2.0\,s)}}
+& \makecell[c]{\textbf{2.0\,s +} \\ \textbf{LLM恢复}} \\
+\midrule
+单词准确率 (\%) & $1.6 \pm 0.1$ & $24.4 \pm 1.2$ & $19.4 \pm 0.4$ & $\mathbf{69.8 \pm 0.2}$ \\
+字符准确率 (\%) & $47.8 \pm 0.1$ & $71.2 \pm 0.8$ & $85.4 \pm 0.4$ & $\mathbf{95.4 \pm 0.1}$ \\
+平均编辑距离 & $7.87 \pm 0.04$ & $4.35 \pm 0.14$ & $2.20 \pm 0.04$ & $\mathbf{0.70 \pm 0.01}$ \\
+等效 ITR (bits/min) & 62.7 & 117.3 & 94.9 & $\mathbf{115.3}$ \\
+\bottomrule
+\end{tabular}}
+\\[0.35em]
+{\small 注：等效 ITR 按式~\eqref{eq:chap2_itr_eff_revised} 计算（$P_{\mathrm{eff}}=1-\overline{\mathrm{ED}}/L$，评估集 $L\approx 15$，$T_{\mathrm{gaze}}=0.5\,\mathrm{s}$）。所有指标为 3 组随机种子的均值 $\pm$ 标准差。}
+\end{table}
+
+
+% =====================================================================
+% 替换 5.2 节中对 LLM 增益的讨论段落（修正 ITR 引用数值）
+% =====================================================================
+
+% 【替换"从表~\ref{ta:chap2_llm_correction_results} 可以看出"开始的段落】
+从表~\ref{ta:chap2_llm_correction_results} 可以看出，LLM 恢复带来的提升是显著的。在 $2.0\,\mathrm{s}$ 条件下，纯 FBCCA 的单词准确率仅为 19.4\%，而引入 LLM 后提升至 69.8\%，绝对提升 50.4 个百分点。与此同时，字符准确率由 85.4\% 提升至 95.4\%，平均编辑距离由 2.20 降至 0.70。等效 ITR 由 94.9\,bits/min 提升至 115.3\,bits/min，超过了同时长下所有基线方法的传输效率（FiLM 2.0\,s: 100.4\,bits/min, eTRCA 2.0\,s: 96.7\,bits/min）。这说明后训练语言模型并非只是在少量位置进行表面修补，而是实质性地改变了整段文本的可读性和可用性。
+
+在 $1.0\,\mathrm{s}$ 条件下，尽管底层 FBCCA 仅有约 50\% 的字符精度，LLM 仍将单词准确率从 1.6\% 提升至 24.4\%，等效 ITR 从 62.7 提升至 117.3\,bits/min。这一增益表明，即便底层信号质量较差，语言模型仍然能够从候选分布中提取有价值的信息，并结合语言先验实现有效纠偏。
+
+
+% =====================================================================
+% 替换 5.1 节最后一段关于 3s ITR 的分析
+% =====================================================================
+
+% 【替换"当时间窗进一步延长至3.0s时"开始的段落】
+当时间窗进一步延长至 $3.0\,\mathrm{s}$ 时，尽管 FBCCA 与 eTRCA 的准确率进一步上升（分别达到 89.4\% 和 91.9\%），但由于单次交互耗时同步增长，二者的 ITR 均出现显著下降（FBCCA: 92.8$\rightarrow$73.3\,bits/min, eTRCA: 96.7$\rightarrow$76.9\,bits/min）。eTRCA 3.0\,s 的 ITR（76.9\,bits/min）低于大多数 2.0\,s 方法（FBCCA: 92.8, eTRCA: 96.7, FiLM: 100.4\,bits/min），仅高于 CCA 2.0\,s（72.8\,bits/min）。这说明脑机拼写存在典型的速度--精度权衡：延长注视时间有助于提高单字符识别精度，但在信息吞吐效率上未必带来收益。
+
+
+% =====================================================================
+% 替换 paper_draft.md 对应 Key Finding 5 的表述（如果也需要同步修改）
+% =====================================================================
+% 原文: "Despite eTRCA 3s achieving 91.9% trial accuracy, its ITR (76.9) is lower than all 2s methods"
+% 修正: "its ITR (76.9) is lower than most 2s methods (FBCCA 92.8, eTRCA 96.7, FiLM 100.4),
+%        only exceeding CCA 2s (72.8)"

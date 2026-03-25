@@ -426,7 +426,7 @@ Table 6 presents the unified comparison across all methods, the central result o
 
 4. **FiLM 2s ≈ eTRCA 2s** at word level (54.0% vs 53.7%), with FiLM requiring no per-subject calibration. This establishes FiLM as a strong calibration-free baseline.
 
-5. **Diminishing returns at 3s**: Despite eTRCA 3s achieving 91.9% trial accuracy, its ITR (76.9) is lower than all 2s methods due to longer trial time. FBCCA 2s+LLM achieves better word accuracy (69.8% vs 64.6%) in less time.
+5. **Diminishing returns at 3s**: Despite eTRCA 3s achieving 91.9% trial accuracy, its ITR (76.9) is lower than most 2s methods (FBCCA 92.8, eTRCA 96.7, FiLM 100.4), only exceeding CCA 2s (72.8). FBCCA 2s+LLM achieves better word accuracy (69.8% vs 64.6%) in less time.
 
 6. **Calibration-free superiority**: The FBCCA + LLM approach requires no subject-specific data, making it immediately deployable for new users---a critical advantage for clinical BCI applications.
 
